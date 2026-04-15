@@ -26,6 +26,8 @@ type Config struct {
 
 	ListenAddr     string
 	HookToken      string
+	AdminToken     string
+	CardStorePath  string
 	RequestTimeout time.Duration
 }
 
@@ -65,6 +67,8 @@ func LoadConfig() (Config, error) {
 		OpenStars:      stars,
 		ListenAddr:     strings.TrimSpace(os.Getenv("ListenAddr")),
 		HookToken:      strings.TrimSpace(os.Getenv("HookToken")),
+		AdminToken:     strings.TrimSpace(os.Getenv("AdminToken")),
+		CardStorePath:  strings.TrimSpace(os.Getenv("CardStorePath")),
 		RequestTimeout: time.Duration(timeoutSeconds) * time.Second,
 	}, nil
 }
@@ -117,4 +121,18 @@ func (c Config) LegacyRequest() (FulfillRequest, error) {
 		return FulfillRequest{}, err
 	}
 	return req, nil
+}
+
+func (c Config) EffectiveAdminToken() string {
+	if strings.TrimSpace(c.AdminToken) != "" {
+		return strings.TrimSpace(c.AdminToken)
+	}
+	return strings.TrimSpace(c.HookToken)
+}
+
+func (c Config) EffectiveCardStorePath() string {
+	if strings.TrimSpace(c.CardStorePath) != "" {
+		return strings.TrimSpace(c.CardStorePath)
+	}
+	return "data/gift_cards.json"
 }

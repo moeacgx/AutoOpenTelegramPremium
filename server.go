@@ -15,19 +15,30 @@ import (
 )
 
 type HTTPServer struct {
-	app *App
-	cfg Config
+	app   *App
+	cfg   Config
+	cards *GiftCardStore
 }
 
 type fieldBag map[string]string
 
-func NewHTTPHandler(app *App, cfg Config) http.Handler {
-	server := &HTTPServer{app: app, cfg: cfg}
+func NewHTTPHandler(app *App, cfg Config) (http.Handler, error) {
+	store, err := NewGiftCardStore(cfg.EffectiveCardStorePath())
+	if err != nil {
+		return nil, err
+	}
+
+	server := &HTTPServer{app: app, cfg: cfg, cards: store}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", server.handleIndex)
+	mux.HandleFunc("/redeem", server.handleRedeemPage)
+	mux.HandleFunc("/admin/cards", server.handleAdminCardsPage)
+	mux.HandleFunc("/admin/cards/generate", server.handleGenerateGiftCards)
+	mux.HandleFunc("/admin/cards/delete", server.handleDeleteGiftCards)
 	mux.HandleFunc("/healthz", server.handleHealthz)
 	mux.HandleFunc("/api/fulfill", server.handleFulfill)
 	mux.HandleFunc("/api/vfaka/fulfill", server.handleVFakaFulfill)
-	return server.withLogging(mux)
+	return server.withLogging(mux), nil
 }
 
 func (s *HTTPServer) withLogging(next http.Handler) http.Handler {

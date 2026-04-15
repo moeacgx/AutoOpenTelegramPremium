@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 *.exe
+dist/
+data/
 tmp_*.html
 tmp_*.js
 tmp_*.log

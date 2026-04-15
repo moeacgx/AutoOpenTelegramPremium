@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,14 +44,25 @@ func main() {
 }
 
 func runServer(cfg Config, app *App) error {
-	server := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: NewHTTPHandler(app, cfg),
+	handler, err := NewHTTPHandler(app, cfg)
+	if err != nil {
+		return err
 	}
 
+	listener, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		return err
+	}
+
+	server := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: handler,
+	}
+
+	log.Printf("HTTP 服务已启动，监听 %s", listener.Addr().String())
+
 	go func() {
-		log.Printf("HTTP 服务已启动，监听 %s", cfg.ListenAddr)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("HTTP 服务异常退出: %v", err)
 		}
 	}()

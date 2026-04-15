@@ -1,0 +1,17 @@
+services:
+  auto-open-telegram-premium:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auto-open-telegram-premium:latest
+    container_name: auto-open-telegram-premium
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      ListenAddr: ":8080"
+      CardStorePath: "/app/data/gift_cards.json"
+    volumes:
+      - ./data:/app/data

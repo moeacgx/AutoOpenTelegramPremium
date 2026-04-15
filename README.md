@@ -6,6 +6,7 @@ Telegram 自动开通 `Premium / Stars` 源代码，基于 `Golang`。
 
 - 传统 `.env` 单次执行模式
 - HTTP Hook 服务模式
+- 内置卡密生成 / 兑换网站
 
 这样既可以手工执行，也可以对接 `VFaka` 这类外部发货系统。
 
@@ -73,6 +74,23 @@ JSON.stringify(Aj.globalState.tonConnectUI.wallet.device)
     go build .
 + Linux
   > 同上，如需在windows下交叉编译Linux 请自行 `golang 交叉编译`
+
+### 编译 Linux 版本
+
+如果你的云服务器是常见 `x86_64 / amd64`，可以直接在当前目录执行：
+
+```powershell
+$env:CGO_ENABLED='0'
+$env:GOOS='linux'
+$env:GOARCH='amd64'
+go build -trimpath -ldflags="-s -w" -o dist/AutoOpenTelegramPremium-linux-amd64 .
+```
+
+编译完成后，产物路径是：
+
+```text
+dist/AutoOpenTelegramPremium-linux-amd64
+```
 
 
 ## 实现逻辑
@@ -163,6 +181,125 @@ curl -X POST http://127.0.0.1:8080/api/fulfill ^
 
 `dry_run=true` 会完成 Fragment 搜索、下单、确认链接、读取 `rawRequest`，
 但不会调用钱包转账，适合上线前测试 Fragment 参数是否有效。
+
+## 内置卡密兑换站
+
+如果你不想接入 `VFaka`，现在可以直接使用程序自带的小站：
+
+- 管理页生成卡密
+- 用户页兑换卡密
+- 卡密数据保存在本地 JSON 文件
+
+推荐配置：
+
+```env
+ListenAddr=:8080
+HookToken=your-hook-token
+AdminToken=your-admin-token
+CardStorePath=data/gift_cards.json
+```
+
+说明：
+
+- `AdminToken` 为空时，后台默认复用 `HookToken`
+- `CardStorePath` 默认是 `data/gift_cards.json`
+- 生成后的卡密只可兑换一次
+
+### 打开页面
+
+管理页：
+
+```text
+http://127.0.0.1:8080/admin/cards?token=your-admin-token
+```
+
+兑换页：
+
+```text
+http://127.0.0.1:8080/redeem
+```
+
+### 使用方式
+
+1. 打开管理页，选择商品类型
+2. 如果是 `Stars`，填写星星数量
+3. 如果是 `Premium`，选择月数
+4. 填写生成数量，点击生成卡密
+5. 把卡密发给用户，用户在兑换页填写卡密和 Telegram 用户名即可
+
+兑换成功后，后台卡密列表会记录：
+
+- 是否已使用
+- 兑换用户名
+- 交易哈希
+- 失败原因
+
+## Docker 部署
+
+项目已经内置 Docker 配置，云服务器上推荐直接用容器部署。
+
+### 1. 准备 `.env`
+
+至少确认这些配置有效：
+
+```env
+ResHash=
+ResCookie=
+ResDH=
+TonAccount=
+TonDevice=
+WalletMnemonic=
+WalletVersion=V5R1Final
+
+ListenAddr=:8080
+HookToken=your-hook-token
+AdminToken=your-admin-token
+CardStorePath=/app/data/gift_cards.json
+```
+
+建议把这些单次执行字段清空，避免误触发单次发货：
+
+```env
+OpenType=
+OpenUserName=
+OpenDuration=
+OpenStars=
+```
+
+### 2. 启动容器
+
+```bash
+docker compose up -d --build
+```
+
+### 3. 查看日志
+
+```bash
+docker compose logs -f
+```
+
+### 4. 访问页面
+
+```text
+兑换页：http://你的服务器IP:8080/redeem
+管理页：http://你的服务器IP:8080/admin/cards?token=你的AdminToken
+```
+
+### 5. 数据持久化
+
+卡密数据会保存在宿主机：
+
+```text
+./data/gift_cards.json
+```
+
+`docker-compose.yml` 已经默认挂载：
+
+```text
+./data:/app/data
+```
+
+所以重建容器不会丢卡密数据。
 
 ### VFaka 对接方式
 

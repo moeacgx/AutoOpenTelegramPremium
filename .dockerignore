@@ -1,0 +1,11 @@
+.git
+.gitignore
+.serena
+dist
+data
+tmp_*.html
+tmp_*.js
+tmp_*.log
+*.exe
+*.md
+docs
