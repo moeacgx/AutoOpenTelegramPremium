@@ -47,6 +47,30 @@ type GiftCardSpec struct {
 	Note           string
 }
 
+func formatPremiumDurationLabel(durationMonths int) string {
+	switch durationMonths {
+	case 12:
+		return "1年"
+	case 6:
+		return "6个月"
+	case 3:
+		return "3个月"
+	default:
+		return fmt.Sprintf("%d个月", durationMonths)
+	}
+}
+
+func formatGiftCardValue(productType ProductType, stars int, durationMonths int) string {
+	switch productType {
+	case ProductPremium:
+		return formatPremiumDurationLabel(durationMonths)
+	case ProductStars:
+		return fmt.Sprintf("%d Stars", stars)
+	default:
+		return "-"
+	}
+}
+
 type GiftCardStore struct {
 	mu   sync.Mutex
 	path string

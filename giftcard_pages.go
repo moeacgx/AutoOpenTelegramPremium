@@ -60,14 +60,7 @@ var giftCardTemplates = template.Must(template.New("giftcard-pages").Funcs(templ
 		}
 	},
 	"cardValue": func(card GiftCard) string {
-		switch card.ProductType {
-		case ProductPremium:
-			return fmt.Sprintf("%d 个月", card.DurationMonths)
-		case ProductStars:
-			return fmt.Sprintf("%d Stars", card.Stars)
-		default:
-			return "-"
-		}
+		return formatGiftCardValue(card.ProductType, card.Stars, card.DurationMonths)
 	},
 	"statusLabel": func(status GiftCardStatus) string {
 		switch status {
@@ -692,6 +685,11 @@ const giftCardPageTemplate = `
     background: #f2ede2;
     border-radius: 10px;
     display: inline-block;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: top;
   }
   .badge {
     display: inline-block;
@@ -723,6 +721,7 @@ const giftCardPageTemplate = `
   }
   .stat-card, .detail-card {
     padding: 14px 16px;
+    min-width: 0;
   }
   .stat-card b, .detail-card b {
     display: block;
@@ -731,6 +730,15 @@ const giftCardPageTemplate = `
     margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: .04em;
+  }
+  .detail-card span,
+  .detail-card a {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
   }
   .queue-list {
     display: grid;
@@ -991,7 +999,10 @@ const giftCardPageTemplate = `
 
       function taskValue(task) {
         if (task.type === 'premium') {
-          return String(task.duration || 0) + ' 个月';
+          if (Number(task.duration || 0) === 12) {
+            return '1年';
+          }
+          return String(task.duration || 0) + '个月';
         }
         return String(task.stars || 0) + ' Stars';
       }
@@ -1216,7 +1227,10 @@ const giftCardPageTemplate = `
 
       function taskValue(task) {
         if (task.type === 'premium') {
-          return String(task.duration || 0) + ' 个月';
+          if (Number(task.duration || 0) === 12) {
+            return '1年';
+          }
+          return String(task.duration || 0) + '个月';
         }
         return String(task.stars || 0) + ' Stars';
       }
@@ -1344,11 +1358,11 @@ const giftCardPageTemplate = `
           <div style="grid-column: 1 / -1;">
             <label for="duration">会员套餐</label>
             <select id="duration" name="duration">
-              <option value="3" {{if eq .FormMonths 3}}selected{{end}}>3 个月</option>
-              <option value="6" {{if eq .FormMonths 6}}selected{{end}}>6 个月</option>
-              <option value="12" {{if eq .FormMonths 12}}selected{{end}}>12 个月</option>
+              <option value="12" {{if eq .FormMonths 12}}selected{{end}}>1年</option>
+              <option value="6" {{if eq .FormMonths 6}}selected{{end}}>6个月</option>
+              <option value="3" {{if eq .FormMonths 3}}selected{{end}}>3个月</option>
             </select>
-            <div class="hint" style="margin-top:8px;">会员暂时使用预设套餐，后面再对接你要的官网实际套餐映射。</div>
+            <div class="hint" style="margin-top:8px;">会员卡密固定支持 1年、6个月、3个月 三档，生成后可直接用于兑换开通。</div>
           </div>
         </div>
 
