@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -146,4 +147,8 @@ func (c Config) EffectiveCardStorePath() string {
 		return strings.TrimSpace(c.CardStorePath)
 	}
 	return "data/gift_cards.json"
+}
+
+func (c Config) EffectiveSiteSettingsPath() string {
+	return filepath.Join(filepath.Dir(c.EffectiveCardStorePath()), "site_settings.json")
 }

@@ -15,9 +15,10 @@ import (
 )
 
 type HTTPServer struct {
-	app   *App
-	cfg   Config
-	cards *GiftCardStore
+	app      *App
+	cfg      Config
+	cards    *GiftCardStore
+	settings *SiteSettingsStore
 }
 
 type fieldBag map[string]string
@@ -28,12 +29,18 @@ func NewHTTPHandler(app *App, cfg Config) (http.Handler, error) {
 		return nil, err
 	}
 
-	server := &HTTPServer{app: app, cfg: cfg, cards: store}
+	settings, err := NewSiteSettingsStore(cfg.EffectiveSiteSettingsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	server := &HTTPServer{app: app, cfg: cfg, cards: store, settings: settings}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleIndex)
 	mux.HandleFunc("/redeem", server.handleRedeemPage)
 	mux.HandleFunc("/redeem/detail", server.handleRedeemDetailPage)
 	mux.HandleFunc("/admin/cards", server.handleAdminCardsPage)
+	mux.HandleFunc("/admin/settings/save", server.handleSaveAdminSettings)
 	mux.HandleFunc("/admin/cards/generate", server.handleGenerateGiftCards)
 	mux.HandleFunc("/admin/cards/delete", server.handleDeleteGiftCards)
 	mux.HandleFunc("/healthz", server.handleHealthz)

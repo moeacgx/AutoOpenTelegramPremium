@@ -203,6 +203,7 @@ CardStorePath=data/gift_cards.json
 
 - `AdminToken` 为空时，后台默认复用 `HookToken`
 - `CardStorePath` 默认是 `data/gift_cards.json`
+- 页面设置会保存在 `data/site_settings.json`
 - 生成后的卡密只可兑换一次
 
 ### 打开页面
@@ -226,6 +227,7 @@ http://127.0.0.1:8080/redeem
 3. 如果是 `Premium`，选择月数
 4. 填写生成数量，点击生成卡密
 5. 把卡密发给用户，用户在兑换页填写卡密和 Telegram 用户名即可
+6. 如果要给用户一个外部购买入口，可在后台“页面设置”里填写购买卡密地址，兑换页会自动显示“购买卡密”按钮，并在新标签页打开
 
 兑换成功后，后台卡密列表会记录：
 
@@ -291,6 +293,7 @@ docker compose logs -f
 
 ```text
 ./data/gift_cards.json
+./data/site_settings.json
 ```
 
 `docker-compose.yml` 已经默认挂载：

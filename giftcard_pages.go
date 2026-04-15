@@ -10,10 +10,11 @@ import (
 )
 
 type redeemPageData struct {
-	Error    string
-	Success  string
-	Code     string
-	Username string
+	Error      string
+	Success    string
+	Code       string
+	Username   string
+	BuyCardURL string
 }
 
 type redeemDetailPageData struct {
@@ -24,6 +25,7 @@ type adminPageData struct {
 	Error      string
 	Success    string
 	AdminToken string
+	BuyCardURL string
 	FormType   string
 	FormStars  int
 	FormMonths int
@@ -421,12 +423,54 @@ func (s *HTTPServer) handleAdminCardsPage(w http.ResponseWriter, r *http.Request
 
 	s.renderAdminPage(w, adminPageData{
 		AdminToken: s.adminTokenFromRequest(r),
+		BuyCardURL: s.settings.Get().BuyCardURL,
 		FormType:   string(ProductStars),
 		FormStars:  50,
 		FormMonths: 3,
 		FormCount:  1,
 		Cards:      s.cards.List(),
 	})
+}
+
+func (s *HTTPServer) handleSaveAdminSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "只支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "表单解析失败", http.StatusBadRequest)
+		return
+	}
+	if !s.authorizeAdmin(r) {
+		http.Error(w, "AdminToken 校验失败", http.StatusUnauthorized)
+		return
+	}
+
+	data := adminPageData{
+		AdminToken: s.adminTokenFromRequest(r),
+		BuyCardURL: strings.TrimSpace(r.FormValue("buy_card_url")),
+		FormType:   string(ProductStars),
+		FormStars:  50,
+		FormMonths: 3,
+		FormCount:  1,
+		Cards:      s.cards.List(),
+	}
+
+	settings, err := s.settings.SetBuyCardURL(data.BuyCardURL)
+	if err != nil {
+		data.Error = err.Error()
+		s.renderAdminPage(w, data)
+		return
+	}
+
+	data.BuyCardURL = settings.BuyCardURL
+	if data.BuyCardURL == "" {
+		data.Success = "购买卡密地址已清空，兑换页将隐藏购买卡密按钮"
+	} else {
+		data.Success = "购买卡密地址已保存，兑换页按钮会在新标签页打开"
+	}
+	s.renderAdminPage(w, data)
 }
 
 func (s *HTTPServer) handleGenerateGiftCards(w http.ResponseWriter, r *http.Request) {
@@ -452,6 +496,7 @@ func (s *HTTPServer) handleGenerateGiftCards(w http.ResponseWriter, r *http.Requ
 
 	data := adminPageData{
 		AdminToken: s.adminTokenFromRequest(r),
+		BuyCardURL: s.settings.Get().BuyCardURL,
 		FormType:   formType,
 		FormStars:  formStars,
 		FormMonths: formMonths,
@@ -550,6 +595,9 @@ func subtleCompare(left string, right string) bool {
 }
 
 func (s *HTTPServer) renderRedeemPage(w http.ResponseWriter, data redeemPageData) {
+	if data.BuyCardURL == "" {
+		data.BuyCardURL = s.settings.Get().BuyCardURL
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := giftCardTemplates.ExecuteTemplate(w, "redeem", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -564,6 +612,9 @@ func (s *HTTPServer) renderRedeemDetailPage(w http.ResponseWriter, data redeemDe
 }
 
 func (s *HTTPServer) renderAdminPage(w http.ResponseWriter, data adminPageData) {
+	if data.BuyCardURL == "" {
+		data.BuyCardURL = s.settings.Get().BuyCardURL
+	}
 	if data.FormType == "" {
 		data.FormType = string(ProductStars)
 	}
@@ -905,10 +956,11 @@ const giftCardPageTemplate = `
             </div>
             <div>
               <label for="username">Telegram 用户名</label>
-              <input id="username" name="username" value="{{.Username}}" placeholder="例如 ciyuancat">
+              <input id="username" name="username" value="{{.Username}}" placeholder="例如 liuyifei">
             </div>
           </div>
           <div class="actions">
+            {{if .BuyCardURL}}<a class="btn btn-secondary" href="{{.BuyCardURL}}" target="_blank" rel="noreferrer noopener" style="text-decoration:none;">购买卡密</a>{{end}}
             <button class="btn btn-primary" type="submit">立即兑换</button>
             <a class="btn btn-ghost" href="/" style="text-decoration:none;">刷新页面</a>
           </div>
@@ -1326,6 +1378,24 @@ const giftCardPageTemplate = `
         <h1>卡密生成台</h1>
         <p class="lead">这里生成本地卡密，不依赖 VFaka。生成后的卡密会写入本地 JSON 文件，用户在兑换页输入卡密即可自动走当前充值服务。</p>
       </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 20px;">
+      <div class="panel-title">
+        <h2>页面设置</h2>
+        <span class="muted">兑换页按钮入口</span>
+      </div>
+      <form method="post" action="/admin/settings/save" class="grid-1" style="margin-bottom:18px;">
+        {{if .AdminToken}}<input type="hidden" name="token" value="{{.AdminToken}}">{{end}}
+        <div>
+          <label for="buy-card-url">购买卡密地址</label>
+          <input id="buy-card-url" name="buy_card_url" value="{{.BuyCardURL}}" placeholder="例如 https://shop.example.com/buy">
+          <div class="hint" style="margin-top:8px;">兑换页会在“立即兑换”左边显示“购买卡密”按钮，点击后新标签页打开。留空即可隐藏这个按钮。</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-secondary" type="submit">保存页面设置</button>
+        </div>
+      </form>
     </div>
 
     <div class="panel" style="margin-bottom: 20px;">
