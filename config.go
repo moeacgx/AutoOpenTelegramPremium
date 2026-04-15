@@ -28,6 +28,7 @@ type Config struct {
 	HookToken      string
 	AdminToken     string
 	CardStorePath  string
+	QueueWorkers   int
 	RequestTimeout time.Duration
 }
 
@@ -53,6 +54,15 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	queueWorkers := 1
+	if raw := strings.TrimSpace(os.Getenv("QueueWorkers")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			return Config{}, fmt.Errorf("QueueWorkers 配置无效: %q", raw)
+		}
+		queueWorkers = value
+	}
+
 	return Config{
 		ResHash:        strings.TrimSpace(os.Getenv("ResHash")),
 		ResCookie:      strings.TrimSpace(os.Getenv("ResCookie")),
@@ -69,6 +79,7 @@ func LoadConfig() (Config, error) {
 		HookToken:      strings.TrimSpace(os.Getenv("HookToken")),
 		AdminToken:     strings.TrimSpace(os.Getenv("AdminToken")),
 		CardStorePath:  strings.TrimSpace(os.Getenv("CardStorePath")),
+		QueueWorkers:   queueWorkers,
 		RequestTimeout: time.Duration(timeoutSeconds) * time.Second,
 	}, nil
 }

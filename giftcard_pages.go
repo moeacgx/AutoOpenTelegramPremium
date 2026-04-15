@@ -1,10 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -14,8 +14,10 @@ type redeemPageData struct {
 	Success  string
 	Code     string
 	Username string
-	Card     *GiftCard
-	Response *FulfillResponse
+}
+
+type redeemDetailPageData struct {
+	TaskID string
 }
 
 type adminPageData struct {
@@ -87,6 +89,30 @@ var giftCardTemplates = template.Must(template.New("giftcard-pages").Funcs(templ
 			return "badge"
 		}
 	},
+	"taskStatusLabel": func(status FulfillTaskStatus) string {
+		switch status {
+		case TaskProcessing:
+			return "处理中"
+		case TaskSucceeded:
+			return "已完成"
+		case TaskFailed:
+			return "失败"
+		default:
+			return "排队中"
+		}
+	},
+	"taskStatusClass": func(status FulfillTaskStatus) string {
+		switch status {
+		case TaskProcessing:
+			return "badge badge-warn"
+		case TaskSucceeded:
+			return "badge badge-ok"
+		case TaskFailed:
+			return "badge badge-danger"
+		default:
+			return "badge"
+		}
+	},
 }).Parse(giftCardPageTemplate))
 
 func (s *HTTPServer) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -125,45 +151,266 @@ func (s *HTTPServer) handleRedeemPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		card, err := s.cards.Reserve(code)
+		task, err := s.submitRedeemTask(code, username)
 		if err != nil {
 			page.Error = err.Error()
 			s.renderRedeemPage(w, page)
 			return
 		}
-		page.Card = &card
-
-		req, err := buildFulfillRequestFromGiftCard(card, username)
-		if err != nil {
-			_ = s.cards.MarkAvailable(card.Code, err.Error())
-			page.Error = err.Error()
-			s.renderRedeemPage(w, page)
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
-		defer cancel()
-
-		resp, err := s.app.Fulfill(ctx, req)
-		if err != nil {
-			_ = s.cards.MarkAvailable(card.Code, err.Error())
-			page.Error = err.Error()
-			s.renderRedeemPage(w, page)
-			return
-		}
-
-		if err := s.cards.MarkRedeemed(card.Code, username, resp); err != nil {
-			page.Error = err.Error()
-			s.renderRedeemPage(w, page)
-			return
-		}
-
-		page.Success = "兑换成功，已经提交充值"
-		page.Response = &resp
-		s.renderRedeemPage(w, page)
+		http.Redirect(w, r, "/redeem/detail?id="+task.ID, http.StatusFound)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "只支持 GET 和 POST", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *HTTPServer) handleRedeemDetailPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "只支持 GET", http.StatusMethodNotAllowed)
+		return
+	}
+
+	taskID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if taskID == "" {
+		http.Error(w, "缺少任务 ID", http.StatusBadRequest)
+		return
+	}
+
+	s.renderRedeemDetailPage(w, redeemDetailPageData{TaskID: taskID})
+}
+
+func (s *HTTPServer) handleRedeemSubmitAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "只支持 POST")
+		return
+	}
+
+	fields, err := parseRequestFields(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	task, err := s.submitRedeemTask(
+		firstNonEmpty(fields.Get("code"), fields.Get("card_code")),
+		firstNonEmpty(fields.Get("username"), fields.Get("telegram_username"), fields.Get("recipient")),
+	)
+	if err != nil {
+		writeError(w, redeemErrorStatus(err), err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":         true,
+		"task":       task,
+		"detail_url": "/redeem/detail?id=" + task.ID,
+	})
+}
+
+func (s *HTTPServer) handleRedeemTasksAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "只支持 GET")
+		return
+	}
+
+	rawIDs := strings.TrimSpace(r.URL.Query().Get("ids"))
+	if rawIDs == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":    true,
+			"tasks": []FulfillTask{},
+			"stats": s.app.QueueStats(),
+		})
+		return
+	}
+
+	parts := strings.Split(rawIDs, ",")
+	taskIDs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			taskIDs = append(taskIDs, trimmed)
+		}
+	}
+
+	tasks, stats := s.loadTaskSnapshots(taskIDs)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"tasks": tasks,
+		"stats": stats,
+	})
+}
+
+func (s *HTTPServer) handleRedeemTaskAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "只支持 GET")
+		return
+	}
+
+	taskID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "缺少任务 ID")
+		return
+	}
+
+	task, ok := s.loadTaskSnapshot(taskID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"task":  task,
+		"stats": s.app.QueueStats(),
+	})
+}
+
+func (s *HTTPServer) submitRedeemTask(code string, username string) (FulfillTask, error) {
+	code = strings.TrimSpace(code)
+	username = normalizeUsername(username)
+
+	if code == "" {
+		return FulfillTask{}, fmt.Errorf("卡密不能为空")
+	}
+	if username == "" {
+		return FulfillTask{}, fmt.Errorf("Telegram 用户名不能为空")
+	}
+
+	taskID := generateTaskID("redeem")
+	card, err := s.cards.Reserve(code, taskID)
+	if err != nil {
+		return FulfillTask{}, err
+	}
+
+	req, err := buildFulfillRequestFromGiftCard(card, username)
+	if err != nil {
+		_ = s.cards.MarkAvailable(card.Code, err.Error())
+		return FulfillTask{}, err
+	}
+
+	task, _, err := s.app.EnqueueFulfill(req, FulfillTaskMeta{
+		ID:       taskID,
+		OrderID:  req.OrderID,
+		CardCode: card.Code,
+	}, queueCallbacks{
+		onSuccess: func(task FulfillTask) {
+			if task.Response != nil {
+				_ = s.cards.MarkRedeemed(card.Code, username, *task.Response)
+			}
+		},
+		onFailure: func(task FulfillTask) {
+			_ = s.cards.MarkAvailable(card.Code, task.Error)
+		},
+	})
+	if err != nil {
+		_ = s.cards.MarkAvailable(card.Code, err.Error())
+		return FulfillTask{}, err
+	}
+
+	return task, nil
+}
+
+func (s *HTTPServer) loadTaskSnapshot(taskID string) (FulfillTask, bool) {
+	if task, ok := s.app.GetTask(taskID); ok {
+		return task, true
+	}
+	card, ok := s.cards.FindByTaskID(taskID)
+	if !ok {
+		return FulfillTask{}, false
+	}
+	return taskFromGiftCard(card), true
+}
+
+func (s *HTTPServer) loadTaskSnapshots(taskIDs []string) ([]FulfillTask, QueueStats) {
+	queueTasks, stats := s.app.ListTasks(taskIDs)
+	found := make(map[string]FulfillTask, len(queueTasks))
+	for _, task := range queueTasks {
+		found[task.ID] = task
+	}
+
+	items := make([]FulfillTask, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		if task, ok := found[taskID]; ok {
+			items = append(items, task)
+			continue
+		}
+		card, ok := s.cards.FindByTaskID(taskID)
+		if !ok {
+			continue
+		}
+		items = append(items, taskFromGiftCard(card))
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items, stats
+}
+
+func taskFromGiftCard(card GiftCard) FulfillTask {
+	taskID := strings.TrimSpace(card.TaskID)
+	task := FulfillTask{
+		ID:             taskID,
+		OrderID:        firstNonEmpty(strings.TrimSpace(card.OrderID), taskID),
+		CardCode:       card.Code,
+		ProductType:    card.ProductType,
+		Username:       firstNonEmpty(card.RedeemedBy, ""),
+		DurationMonths: card.DurationMonths,
+		Stars:          card.Stars,
+		Source:         "giftcard-site",
+		CreatedAt:      card.CreatedAt,
+		UpdatedAt:      card.UpdatedAt,
+	}
+
+	switch card.Status {
+	case GiftCardRedeemed:
+		task.Status = TaskSucceeded
+		finishedAt := card.UpdatedAt
+		if card.RedeemedAt != nil {
+			finishedAt = *card.RedeemedAt
+		}
+		task.FinishedAt = &finishedAt
+		resp := FulfillResponse{
+			OK:             true,
+			ProductType:    card.ProductType,
+			Username:       card.RedeemedBy,
+			OrderID:        card.OrderID,
+			ReqID:          card.ReqID,
+			AmountTON:      card.AmountTON,
+			TxHashBase64:   card.TxHashBase64,
+			ExplorerURL:    card.ExplorerURL,
+			DurationMonths: card.DurationMonths,
+			Stars:          card.Stars,
+		}
+		task.Response = &resp
+	case GiftCardRedeeming:
+		task.Status = TaskProcessing
+		startedAt := card.UpdatedAt
+		task.StartedAt = &startedAt
+	default:
+		if strings.TrimSpace(card.LastError) == "" {
+			task.Status = TaskQueued
+			task.Position = 0
+			return task
+		}
+		task.Status = TaskFailed
+		task.Error = card.LastError
+		finishedAt := card.UpdatedAt
+		task.FinishedAt = &finishedAt
+	}
+
+	return task
+}
+
+func redeemErrorStatus(err error) int {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "正在处理中"), strings.Contains(message, "已使用"), strings.Contains(message, "队列已满"):
+		return http.StatusConflict
+	case strings.Contains(message, "不存在"), strings.Contains(message, "不能为空"), strings.Contains(message, "无效"), strings.Contains(message, "支持"):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
 	}
 }
 
@@ -316,6 +563,13 @@ func (s *HTTPServer) renderRedeemPage(w http.ResponseWriter, data redeemPageData
 	}
 }
 
+func (s *HTTPServer) renderRedeemDetailPage(w http.ResponseWriter, data redeemDetailPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := giftCardTemplates.ExecuteTemplate(w, "redeem-detail", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 func (s *HTTPServer) renderAdminPage(w http.ResponseWriter, data adminPageData) {
 	if data.FormType == "" {
 		data.FormType = string(ProductStars)
@@ -450,6 +704,90 @@ const giftCardPageTemplate = `
   }
   .badge-ok { background: rgba(22,101,52,.12); color: var(--ok); }
   .badge-warn { background: rgba(146,64,14,.14); color: var(--warn); }
+  .badge-danger { background: rgba(220,38,38,.12); color: #991b1b; }
+  .redeem-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+    gap: 20px;
+  }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat-card, .queue-item, .detail-card {
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: rgba(255,255,255,.66);
+  }
+  .stat-card, .detail-card {
+    padding: 14px 16px;
+  }
+  .stat-card b, .detail-card b {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .queue-list {
+    display: grid;
+    gap: 12px;
+  }
+  .queue-item {
+    display: block;
+    padding: 16px;
+    color: inherit;
+    text-decoration: none;
+    transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+  .queue-item:hover {
+    transform: translateY(-1px);
+    border-color: rgba(15,118,110,.32);
+    box-shadow: 0 12px 28px rgba(38, 31, 24, 0.08);
+  }
+  .queue-item-title {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .queue-item-meta, .queue-item-extra, .muted {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .queue-item-extra {
+    margin-top: 10px;
+    word-break: break-word;
+  }
+  .panel-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .panel-title h2 {
+    margin: 0;
+    font-size: 21px;
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .empty-state {
+    padding: 18px;
+    border: 1px dashed var(--line);
+    border-radius: 18px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.7;
+  }
   .list-codes {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -511,7 +849,7 @@ const giftCardPageTemplate = `
   .hidden { display: none; }
   @media (max-width: 840px) {
     h1 { font-size: 28px; }
-    .grid, .result-grid { grid-template-columns: 1fr; }
+    .grid, .result-grid, .redeem-layout, .stat-grid, .detail-grid { grid-template-columns: 1fr; }
     .toolbar {
       align-items: stretch;
     }
@@ -537,45 +875,422 @@ const giftCardPageTemplate = `
       <div class="hero-card">
         <span class="eyebrow">AutoOpenTelegramPremium</span>
         <h1>Telegram 卡密兑换</h1>
-        <p class="lead">输入卡密和 Telegram 用户名，系统会直接调用当前服务完成充值。星星和会员都走同一套后端流程，卡密只能使用一次。</p>
+        <p class="lead">提交后会进入后端串行队列，右侧面板会显示最近 50 条兑换任务，并自动同步状态。用户不需要盲等，可以随时点进详情看当前进度。</p>
+      </div>
+    </div>
+
+    <div class="redeem-layout">
+      <div class="panel">
+        <div class="panel-title">
+          <h2>立即兑换</h2>
+          <span class="muted">默认串行执行，队列并发 1</span>
+        </div>
+        <div id="redeem-message">
+          {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+          {{if .Success}}<div class="alert alert-ok">{{.Success}}</div>{{end}}
+        </div>
+        <form method="post" action="/redeem" class="grid-1" id="redeem-form">
+          <div class="grid">
+            <div>
+              <label for="code">卡密</label>
+              <input id="code" name="code" value="{{.Code}}" placeholder="例如 TGX-ABCD-EFGH-JKLM">
+            </div>
+            <div>
+              <label for="username">Telegram 用户名</label>
+              <input id="username" name="username" value="{{.Username}}" placeholder="例如 ciyuancat">
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" type="submit">立即兑换</button>
+            <a class="btn btn-ghost" href="/" style="text-decoration:none;">刷新页面</a>
+          </div>
+          <div class="hint">
+            用户名不需要带 <code>@</code>，系统会自动处理。若之前失败过，新的重试会重新生成任务，不会再复用旧订单号。
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <h2>最近队列</h2>
+          <span class="muted">浏览器本地缓存最近 50 条</span>
+        </div>
+        <div class="stat-grid" id="queue-stats">
+          <div class="stat-card"><b>队列并发</b><span>-</span></div>
+          <div class="stat-card"><b>等待中</b><span>-</span></div>
+          <div class="stat-card"><b>处理中</b><span>-</span></div>
+        </div>
+        <div class="queue-list" id="queue-list">
+          <div class="empty-state">还没有最近任务。提交兑换后，这里会自动显示排队和结果状态。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var storageKey = 'aotp_recent_redeem_tasks_v1';
+      var maxItems = 50;
+      var form = document.getElementById('redeem-form');
+      var message = document.getElementById('redeem-message');
+      var queueList = document.getElementById('queue-list');
+      var queueStats = document.getElementById('queue-stats');
+
+      function readStore() {
+        try {
+          var raw = window.localStorage.getItem(storageKey);
+          var parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+          return [];
+        }
+      }
+
+      function writeStore(items) {
+        var cleaned = items.slice(0, maxItems);
+        window.localStorage.setItem(storageKey, JSON.stringify(cleaned));
+        return cleaned;
+      }
+
+      function upsertTask(task) {
+        var items = readStore().filter(function (item) {
+          return item && item.id !== task.id;
+        });
+        items.unshift(task);
+        return writeStore(items);
+      }
+
+      function formatTime(value) {
+        if (!value) {
+          return '-';
+        }
+        var date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+          return value;
+        }
+        return date.toLocaleString();
+      }
+
+      function statusLabel(status) {
+        switch (status) {
+          case 'processing': return '处理中';
+          case 'succeeded': return '已完成';
+          case 'failed': return '失败';
+          default: return '排队中';
+        }
+      }
+
+      function statusClass(status) {
+        switch (status) {
+          case 'processing': return 'badge badge-warn';
+          case 'succeeded': return 'badge badge-ok';
+          case 'failed': return 'badge badge-danger';
+          default: return 'badge';
+        }
+      }
+
+      function taskValue(task) {
+        if (task.type === 'premium') {
+          return String(task.duration || 0) + ' 个月';
+        }
+        return String(task.stars || 0) + ' Stars';
+      }
+
+      function renderMessage(kind, text, detailURL) {
+        if (!message) {
+          return;
+        }
+        if (!text) {
+          message.innerHTML = '';
+          return;
+        }
+        var link = detailURL ? ' <a href="' + detailURL + '">查看详情</a>' : '';
+        message.innerHTML = '<div class="alert ' + (kind === 'error' ? 'alert-error' : 'alert-ok') + '">' + text + link + '</div>';
+      }
+
+      function renderStats(stats) {
+        if (!queueStats) {
+          return;
+        }
+        var values = stats || {};
+        queueStats.innerHTML = ''
+          + '<div class="stat-card"><b>队列并发</b><span>' + (values.workers || 1) + '</span></div>'
+          + '<div class="stat-card"><b>等待中</b><span>' + (values.queued || 0) + '</span></div>'
+          + '<div class="stat-card"><b>处理中</b><span>' + (values.processing || 0) + '</span></div>';
+      }
+
+      function renderQueue(items) {
+        if (!queueList) {
+          return;
+        }
+        if (!items.length) {
+          queueList.innerHTML = '<div class="empty-state">还没有最近任务。提交兑换后，这里会自动显示排队和结果状态。</div>';
+          return;
+        }
+
+        queueList.innerHTML = items.map(function (item) {
+          var detailURL = '/redeem/detail?id=' + encodeURIComponent(item.id || '');
+          var summary = item.error
+            ? item.error
+            : (item.response && item.response.req_id ? 'Fragment 请求 ID：' + item.response.req_id : '等待后端同步结果');
+          var positionText = item.status === 'queued' && item.position ? '队列第 ' + item.position + ' 位' : formatTime(item.updated_at || item.created_at);
+          return ''
+            + '<a class="queue-item" href="' + detailURL + '">'
+            +   '<div class="queue-item-title">'
+            +     '<div>'
+            +       '<div><span class="code">' + (item.card_code || '-') + '</span></div>'
+            +       '<div class="queue-item-meta">@' + (item.username || '-') + ' · ' + taskValue(item) + '</div>'
+            +     '</div>'
+            +     '<span class="' + statusClass(item.status) + '">' + statusLabel(item.status) + '</span>'
+            +   '</div>'
+            +   '<div class="queue-item-meta">' + positionText + '</div>'
+            +   '<div class="queue-item-extra">' + summary + '</div>'
+            + '</a>';
+        }).join('');
+      }
+
+      function mergeTasks(tasks) {
+        var items = readStore();
+        var lookup = {};
+        (tasks || []).forEach(function (task) {
+          lookup[task.id] = task;
+        });
+        items = items.map(function (item) {
+          return lookup[item.id] ? Object.assign({}, item, lookup[item.id]) : item;
+        });
+        items.sort(function (left, right) {
+          return new Date(right.created_at || 0).getTime() - new Date(left.created_at || 0).getTime();
+        });
+        writeStore(items);
+        renderQueue(items);
+      }
+
+      function syncTasks() {
+        var items = readStore();
+        renderQueue(items);
+        if (!items.length) {
+          renderStats(null);
+          return;
+        }
+
+        var ids = items.map(function (item) { return item.id; }).filter(Boolean);
+        fetch('/api/redeem/tasks?ids=' + encodeURIComponent(ids.join(',')), { credentials: 'same-origin' })
+          .then(function (response) { return response.json(); })
+          .then(function (payload) {
+            if (!payload || payload.ok !== true) {
+              return;
+            }
+            renderStats(payload.stats || null);
+            mergeTasks(payload.tasks || []);
+          })
+          .catch(function () {
+          });
+      }
+
+      form.addEventListener('submit', function (event) {
+        if (!window.fetch || !window.localStorage) {
+          return;
+        }
+        event.preventDefault();
+
+        var submitButton = form.querySelector('button[type="submit"]');
+        if (submitButton) {
+          submitButton.disabled = true;
+          submitButton.textContent = '提交中...';
+        }
+        renderMessage('', '');
+
+        var body = new URLSearchParams(new FormData(form));
+        fetch('/api/redeem/submit', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+          },
+          body: body.toString(),
+          credentials: 'same-origin'
+        })
+        .then(function (response) {
+          return response.json().then(function (payload) {
+            if (!response.ok || !payload || payload.ok !== true) {
+              throw new Error(payload && payload.error ? payload.error : '提交失败');
+            }
+            return payload;
+          });
+        })
+        .then(function (payload) {
+          var task = payload.task || {};
+          upsertTask(task);
+          renderMessage('ok', '已进入队列，系统会自动同步处理结果。', payload.detail_url || '');
+          form.querySelector('#code').value = '';
+          syncTasks();
+        })
+        .catch(function (error) {
+          renderMessage('error', error.message || '提交失败');
+        })
+        .finally(function () {
+          if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.textContent = '立即兑换';
+          }
+        });
+      });
+
+      syncTasks();
+      window.setInterval(syncTasks, 5000);
+    })();
+  </script>
+</body>
+</html>
+{{end}}
+
+{{define "redeem-detail"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>兑换详情</title>
+  {{template "styles" .}}
+</head>
+<body>
+  <div class="shell">
+    <div class="hero">
+      <div class="hero-card">
+        <span class="eyebrow">Redeem Detail</span>
+        <h1>兑换详情</h1>
+        <p class="lead">任务 ID：<span class="code">{{.TaskID}}</span>。页面会自动轮询后端状态，直到任务完成或失败。</p>
       </div>
     </div>
 
     <div class="panel">
-      {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-      {{if .Success}}<div class="alert alert-ok">{{.Success}}</div>{{end}}
-      <form method="post" action="/redeem" class="grid-1">
-        <div class="grid">
-          <div>
-            <label for="code">卡密</label>
-            <input id="code" name="code" value="{{.Code}}" placeholder="例如 TGX-ABCD-EFGH-JKLM">
-          </div>
-          <div>
-            <label for="username">Telegram 用户名</label>
-            <input id="username" name="username" value="{{.Username}}" placeholder="例如 ciyuancat">
-          </div>
-        </div>
-        <div class="actions">
-          <button class="btn btn-primary" type="submit">立即兑换</button>
-          <span class="hint">用户名不需要带 <code>@</code>，系统会自动处理。</span>
-        </div>
-      </form>
-
-      {{if .Response}}
-      <div class="result-grid">
-        <div class="result-item"><b>商品类型</b>{{productLabel .Response.ProductType}}</div>
-        <div class="result-item"><b>目标用户</b>@{{.Response.Username}}</div>
-        <div class="result-item"><b>订单标识</b>{{.Response.OrderID}}</div>
-        <div class="result-item"><b>Fragment 请求 ID</b>{{.Response.ReqID}}</div>
-        <div class="result-item"><b>支付金额</b>{{.Response.AmountTON}} TON</div>
-        <div class="result-item"><b>链上哈希</b>{{if .Response.TxHashBase64}}{{.Response.TxHashBase64}}{{else}}-{{end}}</div>
+      <div class="panel-title">
+        <h2>任务状态</h2>
+        <a class="btn btn-ghost btn-sm" href="/redeem">返回兑换页</a>
       </div>
-      {{if .Response.ExplorerURL}}
-      <p class="hint" style="margin-top:14px;">区块浏览器：<a href="{{.Response.ExplorerURL}}" target="_blank" rel="noreferrer">{{.Response.ExplorerURL}}</a></p>
-      {{end}}
-      {{end}}
+      <div id="detail-alert"></div>
+      <div class="detail-grid" id="detail-grid">
+        <div class="detail-card"><b>当前状态</b><span>-</span></div>
+        <div class="detail-card"><b>队列位置</b><span>-</span></div>
+        <div class="detail-card"><b>卡密</b><span>-</span></div>
+        <div class="detail-card"><b>目标用户</b><span>-</span></div>
+        <div class="detail-card"><b>商品类型</b><span>-</span></div>
+        <div class="detail-card"><b>面值</b><span>-</span></div>
+        <div class="detail-card"><b>创建时间</b><span>-</span></div>
+        <div class="detail-card"><b>开始时间</b><span>-</span></div>
+        <div class="detail-card"><b>完成时间</b><span>-</span></div>
+        <div class="detail-card"><b>订单号</b><span>-</span></div>
+        <div class="detail-card"><b>Fragment 请求 ID</b><span>-</span></div>
+        <div class="detail-card"><b>支付金额</b><span>-</span></div>
+        <div class="detail-card"><b>链上哈希</b><span>-</span></div>
+        <div class="detail-card"><b>区块浏览器</b><span>-</span></div>
+        <div class="detail-card" style="grid-column: 1 / -1;"><b>错误信息</b><span>-</span></div>
+      </div>
     </div>
   </div>
+
+  <script>
+    (function () {
+      var taskID = '{{.TaskID}}';
+      var alertBox = document.getElementById('detail-alert');
+      var detailGrid = document.getElementById('detail-grid');
+
+      function formatTime(value) {
+        if (!value) {
+          return '-';
+        }
+        var date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+          return value;
+        }
+        return date.toLocaleString();
+      }
+
+      function statusLabel(status) {
+        switch (status) {
+          case 'processing': return '处理中';
+          case 'succeeded': return '已完成';
+          case 'failed': return '失败';
+          default: return '排队中';
+        }
+      }
+
+      function taskValue(task) {
+        if (task.type === 'premium') {
+          return String(task.duration || 0) + ' 个月';
+        }
+        return String(task.stars || 0) + ' Stars';
+      }
+
+      function renderAlert(task) {
+        if (!alertBox) {
+          return;
+        }
+        if (!task) {
+          alertBox.innerHTML = '';
+          return;
+        }
+        if (task.status === 'failed') {
+          alertBox.innerHTML = '<div class="alert alert-error">' + (task.error || '任务失败') + '</div>';
+          return;
+        }
+        if (task.status === 'succeeded') {
+          alertBox.innerHTML = '<div class="alert alert-ok">兑换成功，充值已经完成。</div>';
+          return;
+        }
+        alertBox.innerHTML = '<div class="alert alert-ok">任务已提交，正在后台处理，请稍候自动刷新。</div>';
+      }
+
+      function renderTask(task) {
+        var response = task && task.response ? task.response : {};
+        var rows = [
+          ['当前状态', statusLabel(task.status || 'queued')],
+          ['队列位置', task.status === 'queued' && task.position ? ('第 ' + task.position + ' 位') : '-'],
+          ['卡密', task.card_code || '-'],
+          ['目标用户', task.username ? ('@' + task.username) : '-'],
+          ['商品类型', task.type === 'premium' ? '会员' : '星星'],
+          ['面值', taskValue(task || {})],
+          ['创建时间', formatTime(task.created_at)],
+          ['开始时间', formatTime(task.started_at)],
+          ['完成时间', formatTime(task.finished_at)],
+          ['订单号', task.order_id || '-'],
+          ['Fragment 请求 ID', response.req_id || '-'],
+          ['支付金额', response.amount_ton ? (response.amount_ton + ' TON') : '-'],
+          ['链上哈希', response.tx_hash_base64 || '-'],
+          ['区块浏览器', response.explorer_url ? '<a href="' + response.explorer_url + '" target="_blank" rel="noreferrer">' + response.explorer_url + '</a>' : '-'],
+          ['错误信息', task.error || '-']
+        ];
+
+        detailGrid.innerHTML = rows.map(function (row, index) {
+          var fullWidth = index === rows.length - 1 ? ' style="grid-column: 1 / -1;"' : '';
+          return '<div class="detail-card"' + fullWidth + '><b>' + row[0] + '</b><span>' + row[1] + '</span></div>';
+        }).join('');
+      }
+
+      function syncTask() {
+        fetch('/api/redeem/task?id=' + encodeURIComponent(taskID), { credentials: 'same-origin' })
+          .then(function (response) {
+            return response.json().then(function (payload) {
+              if (!response.ok || !payload || payload.ok !== true) {
+                throw new Error(payload && payload.error ? payload.error : '读取任务失败');
+              }
+              return payload.task;
+            });
+          })
+          .then(function (task) {
+            renderAlert(task);
+            renderTask(task);
+            if (task.status !== 'succeeded' && task.status !== 'failed') {
+              window.setTimeout(syncTask, 5000);
+            }
+          })
+          .catch(function (error) {
+            alertBox.innerHTML = '<div class="alert alert-error">' + (error.message || '读取任务失败') + '</div>';
+          });
+      }
+
+      syncTask();
+    })();
+  </script>
 </body>
 </html>
 {{end}}

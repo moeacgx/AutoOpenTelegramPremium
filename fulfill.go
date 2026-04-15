@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -60,6 +61,7 @@ type App struct {
 	fragment *FragmentService
 	payer    *TonPayer
 	orders   *OrderRegistry
+	queue    *FulfillQueue
 }
 
 func NewApp(cfg Config) (*App, error) {
@@ -73,13 +75,15 @@ func NewApp(cfg Config) (*App, error) {
 		return nil, err
 	}
 
-	return &App{
+	app := &App{
 		fragment: fragment,
 		payer:    payer,
 		orders: &OrderRegistry{
 			states: make(map[string]orderState),
 		},
-	}, nil
+	}
+	app.queue = NewFulfillQueue(cfg.QueueWorkers, cfg.RequestTimeout, app.fulfill)
+	return app, nil
 }
 
 func ParseProductType(raw string) (ProductType, error) {
@@ -163,6 +167,16 @@ func (r *OrderRegistry) FinishFailure(orderID string, err error) {
 	r.states[orderID] = orderState{Err: err.Error()}
 }
 
+func (r *OrderRegistry) Clear(orderID string) {
+	if orderID == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.states, orderID)
+}
+
 func (a *App) Fulfill(ctx context.Context, req FulfillRequest) (FulfillResponse, error) {
 	if err := req.Validate(); err != nil {
 		return FulfillResponse{}, err
@@ -172,20 +186,119 @@ func (a *App) Fulfill(ctx context.Context, req FulfillRequest) (FulfillResponse,
 		return a.fulfill(ctx, req)
 	}
 
-	if existing, err := a.orders.Begin(req.OrderID, req.Force); err != nil {
-		return FulfillResponse{}, err
-	} else if existing != nil {
-		return *existing, nil
-	}
-
-	resp, err := a.fulfill(ctx, req)
+	_, done, err := a.EnqueueFulfill(req, FulfillTaskMeta{
+		OrderID: req.OrderID,
+	}, queueCallbacks{})
 	if err != nil {
-		a.orders.FinishFailure(req.OrderID, err)
 		return FulfillResponse{}, err
 	}
 
-	a.orders.FinishSuccess(req.OrderID, resp)
-	return resp, nil
+	select {
+	case result := <-done:
+		if result.err != nil {
+			return FulfillResponse{}, result.err
+		}
+		return result.resp, nil
+	case <-ctx.Done():
+		return FulfillResponse{}, ctx.Err()
+	}
+}
+
+func (a *App) EnqueueFulfill(req FulfillRequest, meta FulfillTaskMeta, callbacks queueCallbacks) (FulfillTask, <-chan queueResult, error) {
+	if err := req.Validate(); err != nil {
+		return FulfillTask{}, nil, err
+	}
+
+	if req.DryRun {
+		resp, err := a.fulfill(context.Background(), req)
+		done := make(chan queueResult, 1)
+		if err != nil {
+			done <- queueResult{err: err}
+			close(done)
+			return FulfillTask{}, done, err
+		}
+
+		now := time.Now().UTC()
+		taskID := firstNonEmpty(strings.TrimSpace(meta.ID), strings.TrimSpace(req.OrderID), generateTaskID("task"))
+		respCopy := resp
+		task := FulfillTask{
+			ID:             taskID,
+			OrderID:        firstNonEmpty(strings.TrimSpace(meta.OrderID), strings.TrimSpace(req.OrderID)),
+			CardCode:       strings.TrimSpace(meta.CardCode),
+			ProductType:    req.ProductType,
+			Username:       req.Username,
+			DurationMonths: req.DurationMonths,
+			Stars:          req.Stars,
+			Source:         req.Source,
+			Status:         TaskSucceeded,
+			Response:       &respCopy,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			StartedAt:      &now,
+			FinishedAt:     &now,
+		}
+		done <- queueResult{resp: resp}
+		close(done)
+		return task, done, nil
+	}
+
+	if existing, err := a.orders.Begin(req.OrderID, req.Force); err != nil {
+		return FulfillTask{}, nil, err
+	} else if existing != nil {
+		done := make(chan queueResult, 1)
+		done <- queueResult{resp: *existing}
+		close(done)
+		return FulfillTask{
+			ID:             firstNonEmpty(strings.TrimSpace(meta.ID), strings.TrimSpace(req.OrderID)),
+			OrderID:        firstNonEmpty(strings.TrimSpace(meta.OrderID), strings.TrimSpace(req.OrderID)),
+			CardCode:       strings.TrimSpace(meta.CardCode),
+			ProductType:    req.ProductType,
+			Username:       req.Username,
+			DurationMonths: req.DurationMonths,
+			Stars:          req.Stars,
+			Source:         req.Source,
+			Status:         TaskSucceeded,
+			Response:       existing,
+			CreatedAt:      time.Now().UTC(),
+			UpdatedAt:      time.Now().UTC(),
+		}, done, nil
+	}
+
+	wrapped := queueCallbacks{
+		onSuccess: func(task FulfillTask) {
+			if task.Response != nil {
+				a.orders.FinishSuccess(req.OrderID, *task.Response)
+			}
+			if callbacks.onSuccess != nil {
+				callbacks.onSuccess(task)
+			}
+		},
+		onFailure: func(task FulfillTask) {
+			a.orders.FinishFailure(req.OrderID, errors.New(task.Error))
+			if callbacks.onFailure != nil {
+				callbacks.onFailure(task)
+			}
+		},
+	}
+
+	task, done, err := a.queue.Enqueue(req, meta, wrapped)
+	if err != nil {
+		a.orders.Clear(req.OrderID)
+		return FulfillTask{}, nil, err
+	}
+	return task, done, nil
+}
+
+func (a *App) GetTask(taskID string) (FulfillTask, bool) {
+	return a.queue.Get(taskID)
+}
+
+func (a *App) ListTasks(taskIDs []string) ([]FulfillTask, QueueStats) {
+	return a.queue.List(taskIDs)
+}
+
+func (a *App) QueueStats() QueueStats {
+	return a.queue.Stats()
 }
 
 func (a *App) fulfill(ctx context.Context, req FulfillRequest) (FulfillResponse, error) {

@@ -25,6 +25,7 @@ type GiftCard struct {
 	ProductType    ProductType    `json:"type"`
 	Stars          int            `json:"stars,omitempty"`
 	DurationMonths int            `json:"duration,omitempty"`
+	TaskID         string         `json:"task_id,omitempty"`
 	Status         GiftCardStatus `json:"status"`
 	Note           string         `json:"note,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
@@ -33,6 +34,7 @@ type GiftCard struct {
 	RedeemedBy     string         `json:"redeemed_by,omitempty"`
 	OrderID        string         `json:"order_id,omitempty"`
 	ReqID          string         `json:"req_id,omitempty"`
+	AmountTON      string         `json:"amount_ton,omitempty"`
 	TxHashBase64   string         `json:"tx_hash_base64,omitempty"`
 	ExplorerURL    string         `json:"explorer_url,omitempty"`
 	LastError      string         `json:"last_error,omitempty"`
@@ -175,7 +177,7 @@ func (s *GiftCardStore) Generate(spec GiftCardSpec, count int) ([]GiftCard, erro
 	return created, nil
 }
 
-func (s *GiftCardStore) Reserve(code string) (GiftCard, error) {
+func (s *GiftCardStore) Reserve(code string, taskID string) (GiftCard, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -191,7 +193,14 @@ func (s *GiftCardStore) Reserve(code string) (GiftCard, error) {
 		return GiftCard{}, fmt.Errorf("卡密正在处理中，请稍后再试")
 	}
 
+	card.TaskID = strings.TrimSpace(taskID)
 	card.Status = GiftCardRedeeming
+	card.OrderID = ""
+	card.ReqID = ""
+	card.AmountTON = ""
+	card.TxHashBase64 = ""
+	card.ExplorerURL = ""
+	card.LastError = ""
 	card.UpdatedAt = time.Now().UTC()
 	if err := s.saveLocked(); err != nil {
 		return GiftCard{}, err
@@ -229,6 +238,7 @@ func (s *GiftCardStore) MarkRedeemed(code string, username string, resp FulfillR
 	card.RedeemedBy = normalizeUsername(username)
 	card.OrderID = resp.OrderID
 	card.ReqID = resp.ReqID
+	card.AmountTON = resp.AmountTON
 	card.TxHashBase64 = resp.TxHashBase64
 	card.ExplorerURL = resp.ExplorerURL
 	card.LastError = ""
@@ -286,6 +296,23 @@ func (s *GiftCardStore) DeleteCodes(codes []string) (int, error) {
 	return deleted, nil
 }
 
+func (s *GiftCardStore) FindByTaskID(taskID string) (GiftCard, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	normalizedTaskID := strings.TrimSpace(taskID)
+	if normalizedTaskID == "" {
+		return GiftCard{}, false
+	}
+
+	for _, card := range s.data {
+		if strings.TrimSpace(card.TaskID) == normalizedTaskID {
+			return *card, true
+		}
+	}
+	return GiftCard{}, false
+}
+
 func (s *GiftCardStore) newCodeLocked() (string, string, error) {
 	for i := 0; i < 10; i++ {
 		code, err := randomGiftCardCode()
@@ -332,7 +359,7 @@ func buildFulfillRequestFromGiftCard(card GiftCard, username string) (FulfillReq
 		return FulfillRequest{}, err
 	}
 
-	req.OrderID = "giftcard-" + normalizeCardCode(card.Code)
+	req.OrderID = firstNonEmpty(strings.TrimSpace(card.TaskID), "giftcard-"+normalizeCardCode(card.Code))
 	req.Source = "giftcard-site"
 	return req, nil
 }

@@ -24,15 +24,18 @@ func TestGiftCardStoreLifecycle(t *testing.T) {
 		t.Fatalf("卡密数量错误: %d", len(created))
 	}
 
-	locked, err := store.Reserve(created[0].Code)
+	locked, err := store.Reserve(created[0].Code, "redeem-task-1")
 	if err != nil {
 		t.Fatalf("锁定卡密失败: %v", err)
 	}
 	if locked.Status != GiftCardRedeeming {
 		t.Fatalf("卡密状态错误: %s", locked.Status)
 	}
+	if locked.TaskID != "redeem-task-1" {
+		t.Fatalf("任务 ID 记录错误: %s", locked.TaskID)
+	}
 
-	if _, err := store.Reserve(created[0].Code); err == nil {
+	if _, err := store.Reserve(created[0].Code, "redeem-task-2"); err == nil {
 		t.Fatalf("重复锁定同一卡密时应该失败")
 	}
 
@@ -80,6 +83,7 @@ func TestGiftCardStoreLifecycle(t *testing.T) {
 func TestBuildFulfillRequestFromGiftCard(t *testing.T) {
 	req, err := buildFulfillRequestFromGiftCard(GiftCard{
 		Code:        "TGX-ABCD-EFGH-JKLM",
+		TaskID:      "redeem-001",
 		ProductType: ProductStars,
 		Stars:       350,
 	}, "@demo_user")
@@ -93,7 +97,7 @@ func TestBuildFulfillRequestFromGiftCard(t *testing.T) {
 	if req.Stars != 350 {
 		t.Fatalf("Stars 数量错误: %d", req.Stars)
 	}
-	if req.OrderID != "giftcard-TGXABCDEFGHJKLM" {
+	if req.OrderID != "redeem-001" {
 		t.Fatalf("订单号错误: %s", req.OrderID)
 	}
 }
