@@ -1,10 +1,17 @@
 ## 关于本项目
 
- Telegram自动开会员源代码 基于 `Golang` ，这是一个完整的24小时全自动开通TG会员的代码，如果你会一点技术，可无缝对接至你的机器人实现24小时自动代开。
+Telegram 自动开通 `Premium / Stars` 源代码，基于 `Golang`。
+
+当前版本支持两种用法：
+
+- 传统 `.env` 单次执行模式
+- HTTP Hook 服务模式
+
+这样既可以手工执行，也可以对接 `VFaka` 这类外部发货系统。
 
 ## 开始
-~~这只是一个demo版本，没有写配置文件，使用之前，你应该详细阅读源代码里的备注，修改应该代码里备注需要修改的地方。~~  
-请仔细查看`.env`配置文件的说明,如配置错误导致付款以后会员未开通，自行负责。
+
+请仔细查看 `.env` 配置文件说明，如配置错误导致付款以后未发货，自行负责。
 
 **如不会获取配置文件的 `COOKIE` 与 `Hash` 请进交流群自行询问，或动手能力强的自行研究。**
 
@@ -21,11 +28,42 @@
 
 ### 安装依赖
 
-+ golang  
-    >   go mod init   
-        go mod tidy   
-        或者  
-        go install
+```bash
+go mod tidy
+```
+
+### 关键配置
+
+`.env` 至少需要配置以下字段：
+
+```env
+ResHash=fragment_api_hash
+ResCookie=fragment_cookie
+ResDH=fragment_dh
+TonAccount={"address":"0:...","chain":"-239","walletStateInit":"...","publicKey":"..."}
+TonDevice={"platform":"windows","appName":"tonkeeper","appVersion":"...","maxProtocolVersion":2,"features":[...]}
+WalletMnemonic=word1 word2 ... word24
+WalletVersion=V5R1Final
+```
+
+`TonAccount` 和 `TonDevice` 是 Fragment 当前 TonConnect v2 支付流程需要的字段。
+`WalletVersion` 必须和 Tonkeeper 当前钱包合约一致。新版 Tonkeeper 常见值是 `V5R1Final`，
+老钱包可能是 `V4R2`。
+
+获取方式：
+
+1. 在 Chrome 打开 `https://fragment.com/stars/buy`
+2. 确认页面右上角钱包已连接
+3. 打开开发者工具 Console，分别执行：
+
+```js
+JSON.stringify(Aj.globalState.tonConnectUI.wallet.account)
+JSON.stringify(Aj.globalState.tonConnectUI.wallet.device)
+```
+
+把输出结果原样填入 `.env`。
+
+注意：`.env` 包含 Cookie、钱包助记词等敏感信息，绝对不要提交到 Git。
 
 ### 运行OR编译
 + Windows
@@ -39,11 +77,153 @@
 
 ## 实现逻辑
 
-1. 通过解析https://fragment.com的数据
-2. 指定开通会员的用户名
-3. 解析出相关Payload
-4. 携带Payload进行Ton支付
-5. 支付完成，开通完成。
+1. 请求 `fragment.com` 获取目标用户与订单
+2. 获取 `rawRequest`
+3. 直接使用 Fragment 返回的原始 Payload 发起 TON 支付
+4. 支付完成后返回交易结果
+
+## 支持的商品
+
+- Telegram Premium
+- Telegram Stars
+
+## 传统 `.env` 单次执行
+
+### 开通 Premium
+
+```env
+OpenType=premium
+OpenUserName=target_username
+OpenDuration=3
+```
+
+然后执行：
+
+```bash
+go run .
+```
+
+### 购买 Stars
+
+```env
+OpenType=stars
+OpenUserName=target_username
+OpenStars=500
+```
+
+然后执行：
+
+```bash
+go run .
+```
+
+## HTTP Hook 服务模式
+
+### 启动服务
+
+```env
+ListenAddr=:8080
+HookToken=your-secret-token
+```
+
+然后执行：
+
+```bash
+go run .
+```
+
+### 手动调用示例
+
+开通 Premium：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/fulfill ^
+  -H "Content-Type: application/json" ^
+  -H "X-Hook-Token: your-secret-token" ^
+  -d "{\"type\":\"premium\",\"username\":\"target_username\",\"duration\":3,\"order_id\":\"TEST-001\"}"
+```
+
+购买 Stars：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/fulfill ^
+  -H "Content-Type: application/json" ^
+  -H "X-Hook-Token: your-secret-token" ^
+  -d "{\"type\":\"stars\",\"username\":\"target_username\",\"stars\":500,\"order_id\":\"TEST-002\"}"
+```
+
+安全预检 Stars，不发起 TON 转账：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/fulfill ^
+  -H "Content-Type: application/json" ^
+  -H "X-Hook-Token: your-secret-token" ^
+  -d "{\"type\":\"stars\",\"username\":\"target_username\",\"stars\":500,\"order_id\":\"TEST-DRY-001\",\"dry_run\":true}"
+```
+
+`dry_run=true` 会完成 Fragment 搜索、下单、确认链接、读取 `rawRequest`，
+但不会调用钱包转账，适合上线前测试 Fragment 参数是否有效。
+
+### VFaka 对接方式
+
+VFaka 默认商品 Webhook 不会带 Telegram 用户名。
+
+因此推荐做法是：
+
+1. 在商品 Webhook 地址里写死商品类型和规格
+2. 让用户把 Telegram 用户名填写到 `query_password`
+3. 我们的程序从标准 VFaka JSON 里提取 `query_password`
+
+对于 Stars 现在支持两种模式：
+
+- 固定规格模式：URL 里写 `stars=500`，再按订单数量倍增
+- 动态数量模式：URL 里只写 `type=stars`，程序直接把 VFaka 回调里的 `quantity` 当最终 Stars 数量
+
+Stars 商品示例：
+
+```text
+http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&stars=500&username_from=query_password
+```
+
+Stars 动态数量示例：
+
+```text
+http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&username_from=query_password
+```
+
+如果用户在 VFaka 下单数量是 `350`，程序就会自动充值 `350 Stars`。
+
+Stars 商品安全预检示例：
+
+```text
+http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&stars=500&username_from=query_password&dry_run=1
+```
+
+Stars 动态数量安全预检示例：
+
+```text
+http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&username_from=query_password&dry_run=1
+```
+
+Premium 商品示例：
+
+```text
+http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=premium&duration=3&username_from=query_password
+```
+
+如果你必须复用邮箱输入框，也可以这样：
+
+```text
+http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&stars=500&username_from=email
+```
+
+程序会自动把 `email` 的 `@` 前缀前部分作为 Telegram 用户名。
+
+### 健康检查
+
+```bash
+curl http://127.0.0.1:8080/healthz
+```
 
 ## 技术交流/意见反馈
 

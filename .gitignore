@@ -1,0 +1,8 @@
+.serena/
+.env
+.env.*
+!.env.example
+*.exe
+tmp_*.html
+tmp_*.js
+tmp_*.log
