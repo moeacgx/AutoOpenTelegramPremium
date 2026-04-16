@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/liteclient"
@@ -16,9 +18,31 @@ import (
 
 const fragmentWalletAddress = "EQBAjaOyi2wGWlk-EDkSabqqnF-MrrwMadnwqrurKpkla9nE"
 
+const (
+	defaultTonRetryAttempts = 3
+	defaultTonRetryDelay    = 1500 * time.Millisecond
+)
+
+type tonAPI interface {
+	CurrentMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error)
+}
+
+type tonWalletClient interface {
+	GetBalance(ctx context.Context, block *ton.BlockIDExt) (tlb.Coins, error)
+	SendManyWaitTransaction(ctx context.Context, messages []*wallet.Message) (*tlb.Transaction, *ton.BlockIDExt, error)
+}
+
+type tonRuntime struct {
+	api    tonAPI
+	wallet tonWalletClient
+}
+
 type TonPayer struct {
-	mnemonic      []string
-	walletVersion wallet.VersionConfig
+	mnemonic       []string
+	walletVersion  wallet.VersionConfig
+	runtimeFactory func(context.Context) (*tonRuntime, error)
+	retryAttempts  int
+	retryDelay     time.Duration
 }
 
 type PaymentResult struct {
@@ -42,29 +66,37 @@ func NewTonPayer(cfg Config) (*TonPayer, error) {
 	return &TonPayer{
 		mnemonic:      words,
 		walletVersion: version,
+		runtimeFactory: func(ctx context.Context) (*tonRuntime, error) {
+			client := liteclient.NewConnectionPool()
+			if err := client.AddConnectionsFromConfigUrl(ctx, "https://ton-blockchain.github.io/global.config.json"); err != nil {
+				return nil, fmt.Errorf("加载 TON 节点失败: %w", err)
+			}
+
+			api := ton.NewAPIClient(client)
+			w, err := wallet.FromSeed(api, words, version)
+			if err != nil {
+				return nil, fmt.Errorf("钱包初始化失败: %w", err)
+			}
+
+			return &tonRuntime{
+				api:    api,
+				wallet: w,
+			}, nil
+		},
+		retryAttempts: defaultTonRetryAttempts,
+		retryDelay:    defaultTonRetryDelay,
 	}, nil
 }
 
 func (p *TonPayer) Transfer(ctx context.Context, payment RawPayment) (PaymentResult, error) {
-	client := liteclient.NewConnectionPool()
-	if err := client.AddConnectionsFromConfigUrl(ctx, "https://ton-blockchain.github.io/global.config.json"); err != nil {
-		return PaymentResult{}, fmt.Errorf("加载 TON 节点失败: %w", err)
+	runtime, err := p.newRuntime(ctx)
+	if err != nil {
+		return PaymentResult{}, err
 	}
 
-	api := ton.NewAPIClient(client)
-	w, err := wallet.FromSeed(api, p.mnemonic, p.walletVersion)
+	balance, err := p.loadCurrentBalance(ctx, runtime)
 	if err != nil {
-		return PaymentResult{}, fmt.Errorf("钱包初始化失败: %w", err)
-	}
-
-	block, err := api.CurrentMasterchainInfo(ctx)
-	if err != nil {
-		return PaymentResult{}, fmt.Errorf("获取主链信息失败: %w", err)
-	}
-
-	balance, err := w.GetBalance(ctx, block)
-	if err != nil {
-		return PaymentResult{}, fmt.Errorf("获取钱包余额失败: %w", err)
+		return PaymentResult{}, err
 	}
 
 	amount := tlb.MustFromTON(payment.AmountTON)
@@ -91,7 +123,7 @@ func (p *TonPayer) Transfer(ctx context.Context, payment RawPayment) (PaymentRes
 		},
 	}
 
-	tx, confirmedBlock, err := w.SendManyWaitTransaction(ctx, messages)
+	tx, confirmedBlock, err := p.sendManyWaitTransaction(ctx, runtime, messages)
 	if err != nil {
 		return PaymentResult{}, fmt.Errorf("发送交易失败: %w", err)
 	}
@@ -99,9 +131,11 @@ func (p *TonPayer) Transfer(ctx context.Context, payment RawPayment) (PaymentRes
 		return PaymentResult{}, err
 	}
 
-	confirmedBalance, err := w.GetBalance(ctx, confirmedBlock)
+	confirmedBalance, err := p.loadConfirmedBalance(ctx, runtime, confirmedBlock)
 	if err != nil {
-		return PaymentResult{}, fmt.Errorf("获取确认后余额失败: %w", err)
+		// 余额只用于回显，不能因为节点短暂不同步把已确认的链上成功单打成失败，
+		// 否则卡密会被重新放回可兑换状态，存在二次扣款风险。
+		log.Printf("TON 交易已确认，忽略确认后余额读取失败: %v", err)
 	}
 
 	hashBase64 := base64.StdEncoding.EncodeToString(tx.Hash)
@@ -111,8 +145,168 @@ func (p *TonPayer) Transfer(ctx context.Context, payment RawPayment) (PaymentRes
 		TxHashBase64:  hashBase64,
 		TxHashURLSafe: hashURLSafe,
 		ExplorerURL:   "https://tonscan.org/tx/" + hashURLSafe,
-		WalletBalance: confirmedBalance.TON(),
+		WalletBalance: confirmedBalance,
 	}, nil
+}
+
+func (p *TonPayer) newRuntime(ctx context.Context) (*tonRuntime, error) {
+	if p.runtimeFactory == nil {
+		return nil, fmt.Errorf("TON 运行时未初始化")
+	}
+	return p.runtimeFactory(ctx)
+}
+
+func (p *TonPayer) loadCurrentBalance(ctx context.Context, runtime *tonRuntime) (tlb.Coins, error) {
+	var balance tlb.Coins
+
+	var block *ton.BlockIDExt
+	if err := p.retryTransientTonError(ctx, func() error {
+		currentBlock, err := runtime.api.CurrentMasterchainInfo(ctx)
+		if err != nil {
+			return err
+		}
+		block = currentBlock
+		return nil
+	}); err != nil {
+		return tlb.Coins{}, fmt.Errorf("获取主链信息失败: %w", err)
+	}
+
+	if err := p.retryTransientTonError(ctx, func() error {
+		currentBalance, err := runtime.wallet.GetBalance(ctx, block)
+		if err != nil {
+			return err
+		}
+		balance = currentBalance
+		return nil
+	}); err != nil {
+		return tlb.Coins{}, fmt.Errorf("获取钱包余额失败: %w", err)
+	}
+
+	return balance, nil
+}
+
+func (p *TonPayer) sendManyWaitTransaction(ctx context.Context, runtime *tonRuntime, messages []*wallet.Message) (*tlb.Transaction, *ton.BlockIDExt, error) {
+	var (
+		tx    *tlb.Transaction
+		block *ton.BlockIDExt
+	)
+
+	if err := p.retryTransientTonError(ctx, func() error {
+		currentTx, currentBlock, err := runtime.wallet.SendManyWaitTransaction(ctx, messages)
+		if err != nil {
+			return err
+		}
+		tx = currentTx
+		block = currentBlock
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+
+	return tx, block, nil
+}
+
+func (p *TonPayer) loadConfirmedBalance(ctx context.Context, runtime *tonRuntime, confirmedBlock *ton.BlockIDExt) (string, error) {
+	var balance tlb.Coins
+
+	if confirmedBlock != nil {
+		if err := p.retryTransientTonError(ctx, func() error {
+			currentBalance, err := runtime.wallet.GetBalance(ctx, confirmedBlock)
+			if err != nil {
+				return err
+			}
+			balance = currentBalance
+			return nil
+		}); err == nil {
+			return balance.TON(), nil
+		} else if !isRetryableTonNodeError(err) {
+			return "", fmt.Errorf("获取确认后余额失败: %w", err)
+		}
+	}
+
+	if err := p.retryTransientTonError(ctx, func() error {
+		block, err := runtime.api.CurrentMasterchainInfo(ctx)
+		if err != nil {
+			return err
+		}
+
+		currentBalance, err := runtime.wallet.GetBalance(ctx, block)
+		if err != nil {
+			return err
+		}
+		balance = currentBalance
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("获取确认后余额失败: %w", err)
+	}
+
+	return balance.TON(), nil
+}
+
+func (p *TonPayer) retryTransientTonError(ctx context.Context, fn func() error) error {
+	attempts := p.retryAttempts
+	if attempts <= 0 {
+		attempts = defaultTonRetryAttempts
+	}
+
+	delay := p.retryDelay
+	if delay <= 0 {
+		delay = defaultTonRetryDelay
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if !isRetryableTonNodeError(err) || attempt == attempts {
+			return err
+		}
+
+		log.Printf("TON 节点短暂不同步，第 %d/%d 次重试: %v", attempt, attempts, err)
+		if err := sleepWithContext(ctx, delay); err != nil {
+			return lastErr
+		}
+	}
+
+	return lastErr
+}
+
+func isRetryableTonNodeError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	retryableFragments := []string{
+		"lite server error, code 651",
+		"cannot load block",
+		"not in db",
+		"out of sync",
+		"shard_client_seqno",
+	}
+
+	for _, fragment := range retryableFragments {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func parseWalletVersion(raw string) (wallet.VersionConfig, error) {
