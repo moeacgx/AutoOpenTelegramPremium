@@ -2,13 +2,11 @@
 
 Telegram 自动开通 `Premium / Stars` 源代码，基于 `Golang`。
 
-当前版本支持两种用法：
+当前版本支持三种用法：
 
 - 传统 `.env` 单次执行模式
-- HTTP Hook 服务模式
+- HTTP API 服务模式
 - 内置卡密生成 / 兑换网站
-
-这样既可以手工执行，也可以对接 `VFaka` 这类外部发货系统。
 
 ## 开始
 
@@ -135,7 +133,7 @@ OpenStars=500
 go run .
 ```
 
-## HTTP Hook 服务模式
+## HTTP API 服务模式
 
 ### 启动服务
 
@@ -184,7 +182,7 @@ curl -X POST http://127.0.0.1:8080/api/fulfill ^
 
 ## 内置卡密兑换站
 
-如果你不想接入 `VFaka`，现在可以直接使用程序自带的小站：
+现在可以直接使用程序自带的小站：
 
 - 管理页生成卡密
 - 用户页兑换卡密
@@ -304,61 +302,6 @@ docker compose logs -f
 
 所以重建容器不会丢卡密数据。
 
-### VFaka 对接方式
-
-VFaka 默认商品 Webhook 不会带 Telegram 用户名。
-
-因此推荐做法是：
-
-1. 在商品 Webhook 地址里写死商品类型和规格
-2. 让用户把 Telegram 用户名填写到 `query_password`
-3. 我们的程序从标准 VFaka JSON 里提取 `query_password`
-
-对于 Stars 现在支持两种模式：
-
-- 固定规格模式：URL 里写 `stars=500`，再按订单数量倍增
-- 动态数量模式：URL 里只写 `type=stars`，程序直接把 VFaka 回调里的 `quantity` 当最终 Stars 数量
-
-Stars 商品示例：
-
-```text
-http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&stars=500&username_from=query_password
-```
-
-Stars 动态数量示例：
-
-```text
-http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&username_from=query_password
-```
-
-如果用户在 VFaka 下单数量是 `350`，程序就会自动充值 `350 Stars`。
-
-Stars 商品安全预检示例：
-
-```text
-http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&stars=500&username_from=query_password&dry_run=1
-```
-
-Stars 动态数量安全预检示例：
-
-```text
-http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&username_from=query_password&dry_run=1
-```
-
-Premium 商品示例：
-
-```text
-http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=premium&duration=3&username_from=query_password
-```
-
-如果你必须复用邮箱输入框，也可以这样：
-
-```text
-http://127.0.0.1:8080/api/vfaka/fulfill?token=your-secret-token&type=stars&stars=500&username_from=email
-```
-
-程序会自动把 `email` 的 `@` 前缀前部分作为 Telegram 用户名。
-
 ### 健康检查
 
 ```bash
@@ -367,30 +310,7 @@ curl http://127.0.0.1:8080/healthz
 
 ## 技术交流/意见反馈
 
-+ MCG技术交流群 https://t.me/MCG_Club
-
-## AD -- 免费领取国际信用卡
->免费领取VISA卡，万事达卡，充值USDT即可随便刷  
-可绑微信、支付宝、美区AppStore消费  
-24小时自助开卡充值 无需KYC  
-无需人工协助，用户可自行免费注册，后台自助实现入金、开卡、绑卡、销卡、查询等操作，支持无限开卡、在线接码。  
-✅支持 OpenAi 人工智能 chatGPT PLUS 开通   
-✅支持 开通Telegram飞机会员  
-➡️➡️➡️ [点击领取你的国际信用卡](https://t.me/pikabaobot?start=0480f979-3)
-
-## AD -- 机器人推广
-
-查币机器人 - 链上信息查询：[查币机](https://t.me/QueryTokenBot)
-> 可查地址信息 代币实时价格等等
-
-兑币机 - TRX自动兑换：[兑币机](https://t.me/ConvertTrxBot)
-> 自用兑币机，并不是开源版机器人！！！
-
-波场能量机器人：[波场能量机器人](https://t.me/BuyEnergysBot)
-> 波场能量租用，有能量时转账USDT不扣TRX，为你节省50-70%的TRX
-
-TG会员秒开机器人：[TG会员秒开-全自动发货](https://t.me/BuySvipBot)
-> 24小时自动开通Telegram Premium会员，只需一个用户名即可开通。
++ Telegram 交流群 https://t.me/vpsbbq
 
 ## 许可证
 

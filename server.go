@@ -48,7 +48,6 @@ func NewHTTPHandler(app *App, cfg Config) (http.Handler, error) {
 	mux.HandleFunc("/api/redeem/tasks", server.handleRedeemTasksAPI)
 	mux.HandleFunc("/api/redeem/task", server.handleRedeemTaskAPI)
 	mux.HandleFunc("/api/fulfill", server.handleFulfill)
-	mux.HandleFunc("/api/vfaka/fulfill", server.handleVFakaFulfill)
 	return server.withLogging(mux), nil
 }
 
@@ -85,32 +84,6 @@ func (s *HTTPServer) handleFulfill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req, err := buildManualRequest(fields, r.URL.Query())
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	s.executeFulfill(w, r, req)
-}
-
-func (s *HTTPServer) handleVFakaFulfill(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "只支持 POST")
-		return
-	}
-
-	fields, err := parseRequestFields(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if !s.authorize(r, fields) {
-		writeError(w, http.StatusUnauthorized, "HookToken 校验失败")
-		return
-	}
-
-	req, err := buildVFakaRequest(fields, r.URL.Query())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -248,88 +221,6 @@ func buildManualRequest(fields fieldBag, query url.Values) (FulfillRequest, erro
 	return req, nil
 }
 
-func buildVFakaRequest(fields fieldBag, query url.Values) (FulfillRequest, error) {
-	productType, err := ParseProductType(firstNonEmpty(query.Get("type"), fields.Get("type"), fields.Get("product_type")))
-	if err != nil {
-		return FulfillRequest{}, err
-	}
-
-	usernameFrom := strings.TrimSpace(query.Get("username_from"))
-	username := extractUsername(fields, usernameFrom)
-	if username == "" {
-		return FulfillRequest{}, fmt.Errorf("未能从 VFaka 请求中提取 Telegram 用户名，请检查 username_from 配置")
-	}
-
-	orderQuantity := parseOptionalPositiveInt(fields.Get("quantity"), 1)
-
-	req := FulfillRequest{
-		ProductType: productType,
-		Username:    username,
-		OrderID:     firstNonEmpty(fields.Get("order_no"), fields.Get("order_id")),
-		ShowSender:  parseBoolDefault(firstNonEmpty(query.Get("show_sender"), fields.Get("show_sender")), true),
-		DryRun:      parseBoolDefault(firstNonEmpty(query.Get("dry_run"), fields.Get("dry_run")), false),
-		Force:       parseBoolDefault(firstNonEmpty(query.Get("force"), fields.Get("force")), false),
-		Source:      "vfaka-webhook",
-	}
-
-	switch productType {
-	case ProductPremium:
-		req.DurationMonths, err = parsePositiveInt(firstNonEmpty(query.Get("duration"), query.Get("months")), "duration")
-		if err != nil {
-			return FulfillRequest{}, err
-		}
-		if parseBoolDefault(query.Get("multiply_quantity"), false) {
-			req.DurationMonths *= orderQuantity
-		}
-	case ProductStars:
-		fixedStars := firstNonEmpty(query.Get("stars"), fields.Get("stars"))
-		if fixedStars != "" {
-			req.Stars, err = parsePositiveInt(fixedStars, "stars")
-			if err != nil {
-				return FulfillRequest{}, err
-			}
-			if parseBoolDefault(query.Get("multiply_quantity"), true) {
-				req.Stars *= orderQuantity
-			}
-		} else {
-			req.Stars, err = parsePositiveInt(firstNonEmpty(fields.Get("quantity"), query.Get("quantity")), "stars")
-			if err != nil {
-				return FulfillRequest{}, err
-			}
-		}
-	}
-
-	if err := req.Validate(); err != nil {
-		return FulfillRequest{}, err
-	}
-	return req, nil
-}
-
-func extractUsername(fields fieldBag, usernameFrom string) string {
-	if usernameFrom != "" {
-		value := fields.Get(usernameFrom)
-		if strings.EqualFold(usernameFrom, "email") && looksLikeEmail(value) {
-			return normalizeUsername(strings.SplitN(value, "@", 2)[0])
-		}
-		return normalizeUsername(value)
-	}
-
-	candidates := []string{
-		fields.Get("username"),
-		fields.Get("recipient"),
-		fields.Get("telegram_username"),
-		fields.Get("tg_username"),
-		fields.Get("query_password"),
-	}
-
-	for _, candidate := range candidates {
-		if normalized := normalizeUsername(candidate); normalized != "" {
-			return normalized
-		}
-	}
-	return ""
-}
-
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -413,12 +304,6 @@ func parseBoolDefault(raw string, defaultValue bool) bool {
 	default:
 		return defaultValue
 	}
-}
-
-func looksLikeEmail(value string) bool {
-	value = strings.TrimSpace(value)
-	parts := strings.Split(value, "@")
-	return len(parts) == 2 && strings.Contains(parts[1], ".")
 }
 
 func (f fieldBag) Get(key string) string {

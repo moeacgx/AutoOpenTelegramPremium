@@ -933,8 +933,8 @@ const giftCardPageTemplate = `
     <div class="hero">
       <div class="hero-card">
         <span class="eyebrow">AutoOpenTelegramPremium</span>
-        <h1>Telegram 卡密兑换</h1>
-        <p class="lead">提交后会进入后端串行队列，右侧面板会显示最近 50 条兑换任务，并自动同步状态。用户不需要盲等，可以随时点进详情看当前进度。</p>
+        <h1>Telegram 星星/大会员兑换</h1>
+        <p class="lead">提交后会开始自动处理，右侧会同步显示最近 50 条兑换记录。你可以随时查看当前进度，不用一直停留在这个页面等待。</p>
       </div>
     </div>
 
@@ -1376,7 +1376,7 @@ const giftCardPageTemplate = `
       <div class="hero-card">
         <span class="eyebrow">Admin</span>
         <h1>卡密生成台</h1>
-        <p class="lead">这里生成本地卡密，不依赖 VFaka。生成后的卡密会写入本地 JSON 文件，用户在兑换页输入卡密即可自动走当前充值服务。</p>
+        <p class="lead">这里生成本地卡密。生成后的卡密会写入本地 JSON 文件，用户在兑换页输入卡密后即可自动处理充值。</p>
       </div>
     </div>
 
