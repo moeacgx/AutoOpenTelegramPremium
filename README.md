@@ -2,6 +2,9 @@
 
 Telegram 自动开通 `Premium / Stars` 源代码，基于 `Golang`。
 
+本项目基于原项目二次开发：
+https://github.com/TGlimmer/AutoOpenTelegramPremium
+
 当前版本支持三种用法：
 
 - 传统 `.env` 单次执行模式
