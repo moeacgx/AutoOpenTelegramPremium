@@ -710,6 +710,13 @@ const giftCardPageTemplate = `
   .btn-primary { background: var(--accent); color: #fff; }
   .btn-secondary { background: rgba(194,65,12,.12); color: var(--accent-2); }
   .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .redeem-actions {
+    display: grid;
+    align-items: stretch;
+  }
+  .redeem-actions-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .redeem-actions-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .redeem-actions .btn { width: 100%; }
   .redeem-assist {
     display: grid;
     gap: 10px;
@@ -947,6 +954,9 @@ const giftCardPageTemplate = `
   @media (max-width: 840px) {
     h1 { font-size: 28px; }
     .grid, .result-grid, .redeem-layout, .stat-grid, .detail-grid { grid-template-columns: 1fr; }
+    .redeem-actions {
+      grid-template-columns: 1fr;
+    }
     .toolbar {
       align-items: stretch;
     }
@@ -1003,7 +1013,7 @@ const giftCardPageTemplate = `
             </div>
             <div class="recipient-preview" id="recipient-preview">输入 Telegram 用户名后，这里会自动查询并显示确认结果。</div>
           </div>
-          <div class="actions">
+          <div class="actions redeem-actions{{if .BuyCardURL}} redeem-actions-3{{else}} redeem-actions-2{{end}}">
             {{if .BuyCardURL}}<a class="btn btn-secondary" href="{{.BuyCardURL}}" target="_blank" rel="noreferrer noopener" style="text-decoration:none;">购买卡密</a>{{end}}
             <button class="btn btn-primary" type="submit">立即兑换</button>
             <a class="btn btn-ghost" href="/" style="text-decoration:none;">刷新页面</a>
