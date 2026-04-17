@@ -30,6 +30,14 @@ type RawPayment struct {
 	PayloadBase64 string
 }
 
+type RecipientPreview struct {
+	Found       bool   `json:"found"`
+	Username    string `json:"username"`
+	Recipient   string `json:"recipient,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	PhotoURL    string `json:"photo_url,omitempty"`
+}
+
 func NewFragmentService(cfg Config) (*FragmentService, error) {
 	if cfg.ResHash == "" {
 		return nil, fmt.Errorf("缺少 ResHash 配置")
@@ -52,6 +60,36 @@ func NewFragmentService(cfg Config) (*FragmentService, error) {
 }
 
 func (s *FragmentService) SearchRecipient(ctx context.Context, req FulfillRequest) (string, error) {
+	found, err := s.searchRecipient(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	recipient, ok := found["recipient"].(string)
+	if !ok || strings.TrimSpace(recipient) == "" {
+		return "", fmt.Errorf("Fragment 返回缺少 recipient")
+	}
+	return recipient, nil
+}
+
+func (s *FragmentService) PreviewRecipient(ctx context.Context, username string) (RecipientPreview, error) {
+	normalized := normalizeUsername(username)
+	if normalized == "" {
+		return RecipientPreview{}, fmt.Errorf("Telegram 用户名不能为空")
+	}
+
+	found, err := s.searchRecipient(ctx, FulfillRequest{
+		ProductType: ProductStars,
+		Username:    normalized,
+	})
+	if err != nil {
+		return RecipientPreview{}, err
+	}
+
+	return recipientPreviewFromFound(normalized, found), nil
+}
+
+func (s *FragmentService) searchRecipient(ctx context.Context, req FulfillRequest) (map[string]interface{}, error) {
 	data := url.Values{}
 	data.Set("query", req.Username)
 
@@ -62,29 +100,25 @@ func (s *FragmentService) SearchRecipient(ctx context.Context, req FulfillReques
 	case ProductStars:
 		data.Set("method", "searchStarsRecipient")
 	default:
-		return "", fmt.Errorf("未知商品类型: %s", req.ProductType)
+		return nil, fmt.Errorf("未知商品类型: %s", req.ProductType)
 	}
 
 	result, err := s.postAPI(ctx, data, "")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	okValue, ok := result["ok"].(bool)
 	if !ok || !okValue {
-		return "", fmt.Errorf("Fragment 搜索用户失败")
+		return nil, fmt.Errorf("Fragment 搜索用户失败")
 	}
 
 	found, ok := result["found"].(map[string]interface{})
 	if !ok {
-		return "", fmt.Errorf("Fragment 返回缺少 found 字段")
+		return nil, fmt.Errorf("Fragment 返回缺少 found 字段")
 	}
 
-	recipient, ok := found["recipient"].(string)
-	if !ok || strings.TrimSpace(recipient) == "" {
-		return "", fmt.Errorf("Fragment 返回缺少 recipient")
-	}
-	return recipient, nil
+	return found, nil
 }
 
 func (s *FragmentService) BootstrapSession(ctx context.Context, productType ProductType) error {
@@ -203,6 +237,38 @@ func fragmentError(result map[string]interface{}) string {
 		raw, _ := json.Marshal(typed)
 		return string(raw)
 	}
+}
+
+func recipientPreviewFromFound(username string, found map[string]interface{}) RecipientPreview {
+	return RecipientPreview{
+		Found:       true,
+		Username:    normalizeUsername(firstStringValue(found, "username", "user", "slug")),
+		Recipient:   strings.TrimSpace(firstStringValue(found, "recipient")),
+		DisplayName: strings.TrimSpace(firstStringValue(found, "name", "title", "display_name", "displayName", "label")),
+		PhotoURL:    strings.TrimSpace(firstStringValue(found, "photo", "photo_url", "photoURL", "avatar", "avatar_url")),
+	}.withFallbackUsername(username)
+}
+
+func (p RecipientPreview) withFallbackUsername(username string) RecipientPreview {
+	if strings.TrimSpace(p.Username) == "" {
+		p.Username = normalizeUsername(username)
+	}
+	return p
+}
+
+func firstStringValue(values map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok || value == nil {
+			continue
+		}
+		if typed, ok := value.(string); ok {
+			if trimmed := strings.TrimSpace(typed); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 func (s *FragmentService) GetRawRequest(ctx context.Context, reqID string) (RawPayment, error) {

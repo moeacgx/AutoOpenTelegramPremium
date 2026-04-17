@@ -45,6 +45,7 @@ func NewHTTPHandler(app *App, cfg Config) (http.Handler, error) {
 	mux.HandleFunc("/admin/cards/delete", server.handleDeleteGiftCards)
 	mux.HandleFunc("/healthz", server.handleHealthz)
 	mux.HandleFunc("/api/redeem/submit", server.handleRedeemSubmitAPI)
+	mux.HandleFunc("/api/redeem/recipient", server.handleRedeemRecipientPreviewAPI)
 	mux.HandleFunc("/api/redeem/tasks", server.handleRedeemTasksAPI)
 	mux.HandleFunc("/api/redeem/task", server.handleRedeemTaskAPI)
 	mux.HandleFunc("/api/fulfill", server.handleFulfill)
@@ -63,6 +64,43 @@ func (s *HTTPServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":   true,
 		"time": time.Now().Format(time.RFC3339),
+	})
+}
+
+func (s *HTTPServer) handleRedeemRecipientPreviewAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "只支持 GET")
+		return
+	}
+
+	username := normalizeUsername(r.URL.Query().Get("username"))
+	if username == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"found":   false,
+			"message": "请输入 Telegram 用户名",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
+
+	preview, err := s.app.fragment.PreviewRecipient(ctx, username)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":       true,
+			"found":    false,
+			"username": username,
+			"message":  err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		"found":     true,
+		"recipient": preview,
 	})
 }
 

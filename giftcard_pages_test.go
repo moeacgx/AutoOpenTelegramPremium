@@ -25,7 +25,12 @@ func TestGiftCardTemplateIncludesBuyCardButtonAndUpdatedUsernameExample(t *testi
 		"购买卡密",
 		`target="_blank"`,
 		`rel="noreferrer noopener"`,
-		`placeholder="例如 liuyifei"`,
+		`placeholder="例如 liuyifei 或 @liuyifei"`,
+		"Telegram 用户名（不是昵称）",
+		"不是昵称/显示名",
+		`id="recipient-preview"`,
+		"/api/redeem/recipient?username=",
+		"已找到 Telegram 用户",
 	}
 
 	for _, snippet := range requiredSnippets {

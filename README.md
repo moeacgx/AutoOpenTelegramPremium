@@ -50,20 +50,95 @@ WalletVersion=V5R1Final
 
 `TonAccount` 和 `TonDevice` 是 Fragment 当前 TonConnect v2 支付流程需要的字段。
 `WalletVersion` 必须和 Tonkeeper 当前钱包合约一致。新版 Tonkeeper 常见值是 `V5R1Final`，
-老钱包可能是 `V4R2`。
+老钱包可能是 `V4R2`。不建议留空，留空时程序会默认按 `V4R2` 处理。
 
-获取方式：
+### 获取 Fragment 配置
 
-1. 在 Chrome 打开 `https://fragment.com/stars/buy`
-2. 确认页面右上角钱包已连接
-3. 打开开发者工具 Console，分别执行：
+打开 Chrome，访问：
+
+```text
+https://fragment.com/stars/buy
+```
+
+确认右上角已经连接 Tonkeeper 钱包，然后按 `F12` 打开开发者工具。
+
+#### 获取 `ResHash`
+
+1. 切到 **Network** 面板
+2. 刷新页面，或在购买 Stars 页面点一次购买相关操作
+3. 在请求列表里搜索 `api?hash=`
+4. 打开类似下面的请求：
+
+```text
+https://fragment.com/api?hash=0b577b889c7bc7ed13
+```
+
+`hash=` 后面的值就是 `ResHash`：
+
+```env
+ResHash=0b577b889c7bc7ed13
+```
+
+不要填整条 URL，只填 `hash=` 后面的字符串。
+
+#### 获取 `ResCookie`
+
+在同一个 `fragment.com/api?hash=...` 请求上右键：
+
+```text
+Copy -> Copy as cURL
+```
+
+复制出来的内容里会有 cookie，例如：
+
+```bash
+-b "stel_ssid=xxx; stel_dt=-480; stel_token=xxx; stel_ton_token=xxx"
+```
+
+把引号里面整段填到 `.env`：
+
+```env
+ResCookie=stel_ssid=xxx; stel_dt=-480; stel_token=xxx; stel_ton_token=xxx
+```
+
+注意只填 cookie 内容，不要把 `-b`、引号或其他请求头一起填进去。
+
+#### 获取 `ResDH`
+
+还是在 `Copy as cURL` 的内容里，找到 `--data-raw`。
+
+你会看到类似：
+
+```bash
+--data-raw "mode=new&lv=false&dh=1253064641&method=updateStarsBuyState"
+```
+
+其中 `dh=` 后面的数字就是 `ResDH`：
+
+```env
+ResDH=1253064641
+```
+
+#### 获取 `TonAccount` 和 `TonDevice`
+
+切到开发者工具的 **Console** 面板，分别执行：
 
 ```js
 JSON.stringify(Aj.globalState.tonConnectUI.wallet.account)
 JSON.stringify(Aj.globalState.tonConnectUI.wallet.device)
 ```
 
-把输出结果原样填入 `.env`。
+把两次输出结果原样填入 `.env`：
+
+```env
+TonAccount={"address":"0:...","chain":"-239","walletStateInit":"...","publicKey":"..."}
+TonDevice={"platform":"windows","appName":"tonkeeper","appVersion":"...","maxProtocolVersion":2,"features":[...]}
+```
+
+如果 Console 提示对象不存在，先确认 Fragment 页面右上角钱包已经连接，再刷新页面后重试。
+
+这些值来自浏览器会话，可能会过期。如果后续出现 Fragment 会话初始化失败、订单确认失败、
+Cookie 失效等错误，需要重新按上面的步骤抓一份新的配置。
 
 注意：`.env` 包含 Cookie、钱包助记词等敏感信息，绝对不要提交到 Git。
 

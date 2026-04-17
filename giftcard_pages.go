@@ -710,6 +710,42 @@ const giftCardPageTemplate = `
   .btn-primary { background: var(--accent); color: #fff; }
   .btn-secondary { background: rgba(194,65,12,.12); color: var(--accent-2); }
   .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .username-help {
+    margin-top: 8px;
+    border: 1px solid rgba(146,64,14,.18);
+    border-radius: 14px;
+    background: rgba(146,64,14,.08);
+    color: var(--warn);
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .recipient-preview {
+    margin-top: 10px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: rgba(255,255,255,.72);
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .recipient-preview-ok {
+    border-color: rgba(22,101,52,.22);
+    background: rgba(22,101,52,.07);
+    color: var(--ok);
+  }
+  .recipient-preview-warn {
+    border-color: rgba(146,64,14,.22);
+    background: rgba(146,64,14,.08);
+    color: var(--warn);
+  }
+  .recipient-preview-error {
+    border-color: rgba(220,38,38,.20);
+    background: rgba(220,38,38,.07);
+    color: #991b1b;
+  }
+  .recipient-preview strong { color: inherit; }
   .alert {
     border-radius: 16px;
     padding: 14px 16px;
@@ -955,8 +991,12 @@ const giftCardPageTemplate = `
               <input id="code" name="code" value="{{.Code}}" placeholder="例如 TGX-ABCD-EFGH-JKLM">
             </div>
             <div>
-              <label for="username">Telegram 用户名</label>
-              <input id="username" name="username" value="{{.Username}}" placeholder="例如 liuyifei">
+              <label for="username">Telegram 用户名（不是昵称）</label>
+              <input id="username" name="username" value="{{.Username}}" placeholder="例如 liuyifei 或 @liuyifei">
+              <div class="username-help">
+                请填写个人资料里的 Username（唯一用户名），不是昵称/显示名。用户名通常以 <code>@</code> 开头，提交时带不带 <code>@</code> 都可以。
+              </div>
+              <div class="recipient-preview" id="recipient-preview">输入 Telegram 用户名后，这里会自动查询并显示确认结果。</div>
             </div>
           </div>
           <div class="actions">
@@ -965,7 +1005,7 @@ const giftCardPageTemplate = `
             <a class="btn btn-ghost" href="/" style="text-decoration:none;">刷新页面</a>
           </div>
           <div class="hint">
-            用户名不需要带 <code>@</code>，系统会自动处理。若之前失败过，新的重试会重新生成任务，不会再复用旧订单号。
+            提交前请再次确认 Telegram 用户名无误；昵称可能重复，填错可能充值到其他账号。若之前失败过，新的重试会重新生成任务，不会再复用旧订单号。
           </div>
         </form>
       </div>
@@ -995,6 +1035,10 @@ const giftCardPageTemplate = `
       var message = document.getElementById('redeem-message');
       var queueList = document.getElementById('queue-list');
       var queueStats = document.getElementById('queue-stats');
+      var usernameInput = document.getElementById('username');
+      var recipientPreview = document.getElementById('recipient-preview');
+      var recipientPreviewTimer = null;
+      var recipientPreviewSeq = 0;
 
       function readStore() {
         try {
@@ -1069,6 +1113,78 @@ const giftCardPageTemplate = `
         }
         var link = detailURL ? ' <a href="' + detailURL + '">查看详情</a>' : '';
         message.innerHTML = '<div class="alert ' + (kind === 'error' ? 'alert-error' : 'alert-ok') + '">' + text + link + '</div>';
+      }
+
+      function escapeHTML(value) {
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function setRecipientPreview(kind, html) {
+        if (!recipientPreview) {
+          return;
+        }
+        recipientPreview.className = 'recipient-preview' + (kind ? ' recipient-preview-' + kind : '');
+        recipientPreview.innerHTML = html;
+      }
+
+      function scheduleRecipientPreview() {
+        if (!usernameInput || !recipientPreview || !window.fetch) {
+          return;
+        }
+
+        window.clearTimeout(recipientPreviewTimer);
+        var raw = usernameInput.value || '';
+        var username = raw.trim().replace(/^@+/, '');
+        var seq = ++recipientPreviewSeq;
+
+        if (!username) {
+          setRecipientPreview('', '输入 Telegram 用户名后，这里会自动查询并显示确认结果。');
+          return;
+        }
+        if (/\s/.test(raw)) {
+          setRecipientPreview('warn', '这个内容看起来像昵称/显示名。请填写 Telegram Username，例如 <strong>@liuyifei</strong>。');
+          return;
+        }
+        if (username.length < 5) {
+          setRecipientPreview('warn', 'Telegram Username 通常至少 5 位，请继续核对，别填写昵称。');
+          return;
+        }
+        if (!/^[A-Za-z0-9_]+$/.test(username)) {
+          setRecipientPreview('warn', 'Telegram Username 通常只包含英文字母、数字和下划线。请确认不是昵称/显示名。');
+          return;
+        }
+
+        setRecipientPreview('warn', '正在查询 Telegram 用户，请稍候...');
+        recipientPreviewTimer = window.setTimeout(function () {
+          fetch('/api/redeem/recipient?username=' + encodeURIComponent(username), {
+            credentials: 'same-origin'
+          })
+          .then(function (response) { return response.json(); })
+          .then(function (payload) {
+            if (seq !== recipientPreviewSeq) {
+              return;
+            }
+            if (!payload || payload.ok !== true || payload.found !== true || !payload.recipient) {
+              setRecipientPreview('error', '未找到这个 Telegram Username。请确认填写的是用户名，不是昵称/显示名。');
+              return;
+            }
+            var item = payload.recipient || {};
+            var shownUsername = item.username || username;
+            var displayName = item.display_name ? '，显示名：' + escapeHTML(item.display_name) : '';
+            setRecipientPreview('ok', '已找到 Telegram 用户：<strong>@' + escapeHTML(shownUsername) + '</strong>' + displayName + '。提交前请确认是目标账号。');
+          })
+          .catch(function () {
+            if (seq !== recipientPreviewSeq) {
+              return;
+            }
+            setRecipientPreview('error', '暂时无法查询用户，请稍后重试，或提交前手动确认 Username。');
+          });
+        }, 700);
       }
 
       function renderStats(stats) {
@@ -1197,6 +1313,11 @@ const giftCardPageTemplate = `
           }
         });
       });
+
+      if (usernameInput) {
+        usernameInput.addEventListener('input', scheduleRecipientPreview);
+        scheduleRecipientPreview();
+      }
 
       syncTasks();
       window.setInterval(syncTasks, 5000);
