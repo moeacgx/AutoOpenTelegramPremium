@@ -28,6 +28,7 @@ func TestGiftCardTemplateIncludesBuyCardButtonAndUpdatedUsernameExample(t *testi
 		`placeholder="例如 liuyifei 或 @liuyifei"`,
 		"Telegram 用户名（不是昵称）",
 		"不是昵称/显示名",
+		`class="redeem-assist"`,
 		`id="recipient-preview"`,
 		"/api/redeem/recipient?username=",
 		"已找到 Telegram 用户",

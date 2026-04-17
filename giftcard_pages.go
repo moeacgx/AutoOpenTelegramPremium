@@ -710,8 +710,11 @@ const giftCardPageTemplate = `
   .btn-primary { background: var(--accent); color: #fff; }
   .btn-secondary { background: rgba(194,65,12,.12); color: var(--accent-2); }
   .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .redeem-assist {
+    display: grid;
+    gap: 10px;
+  }
   .username-help {
-    margin-top: 8px;
     border: 1px solid rgba(146,64,14,.18);
     border-radius: 14px;
     background: rgba(146,64,14,.08);
@@ -721,7 +724,6 @@ const giftCardPageTemplate = `
     line-height: 1.6;
   }
   .recipient-preview {
-    margin-top: 10px;
     border: 1px solid var(--line);
     border-radius: 14px;
     background: rgba(255,255,255,.72);
@@ -993,11 +995,13 @@ const giftCardPageTemplate = `
             <div>
               <label for="username">Telegram 用户名（不是昵称）</label>
               <input id="username" name="username" value="{{.Username}}" placeholder="例如 liuyifei 或 @liuyifei">
-              <div class="username-help">
-                请填写个人资料里的 Username（唯一用户名），不是昵称/显示名。用户名通常以 <code>@</code> 开头，提交时带不带 <code>@</code> 都可以。
-              </div>
-              <div class="recipient-preview" id="recipient-preview">输入 Telegram 用户名后，这里会自动查询并显示确认结果。</div>
             </div>
+          </div>
+          <div class="redeem-assist">
+            <div class="username-help">
+              请填写个人资料里的 Username（唯一用户名），不是昵称/显示名。用户名通常以 <code>@</code> 开头，提交时带不带 <code>@</code> 都可以。
+            </div>
+            <div class="recipient-preview" id="recipient-preview">输入 Telegram 用户名后，这里会自动查询并显示确认结果。</div>
           </div>
           <div class="actions">
             {{if .BuyCardURL}}<a class="btn btn-secondary" href="{{.BuyCardURL}}" target="_blank" rel="noreferrer noopener" style="text-decoration:none;">购买卡密</a>{{end}}
