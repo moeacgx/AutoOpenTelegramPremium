@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -42,5 +43,41 @@ func TestGiftCardTemplateIncludesBuyCardButtonAndUpdatedUsernameExample(t *testi
 		if !strings.Contains(giftCardPageTemplate, snippet) {
 			t.Fatalf("兑换页缺少新的购买入口或用户名示例: %s", snippet)
 		}
+	}
+}
+
+func TestAdminTokenFromRequestOnlyAcceptsHeaders(t *testing.T) {
+	server := &HTTPServer{}
+
+	req := httptest.NewRequest("GET", "/admin/cards?token=url-token", nil)
+	req.Header.Set("Authorization", "Bearer header-token")
+
+	if got := server.adminTokenFromRequest(req); got != "header-token" {
+		t.Fatalf("应优先从请求头读取 AdminToken，实际: %q", got)
+	}
+
+	req = httptest.NewRequest("GET", "/admin/cards?token=url-token", nil)
+	if got := server.adminTokenFromRequest(req); got != "" {
+		t.Fatalf("URL token 不应再被后台接受，实际: %q", got)
+	}
+}
+
+func TestAdminAuthPageMentionsHeaderOnlyLogin(t *testing.T) {
+	html := renderAdminAuthPageHTML("请重新登录")
+	requiredSnippets := []string{
+		"Authorization: Bearer",
+		"X-Admin-Token",
+		"sessionStorage",
+		"为了避免 token 继续出现在 URL",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(html, snippet) {
+			t.Fatalf("后台登录页缺少关键安全提示: %s", snippet)
+		}
+	}
+
+	if strings.Contains(html, "?token=") {
+		t.Fatalf("后台登录页不应再提示 URL token 登录")
 	}
 }

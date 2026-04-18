@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -56,7 +57,7 @@ func (s *HTTPServer) withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s source=%s cost=%s", r.Method, r.URL.Path, r.RemoteAddr, time.Since(startedAt))
+		log.Printf("%s %s source=%s cost=%s", r.Method, r.URL.Path, clientIPFromRequest(r), time.Since(startedAt))
 	})
 }
 
@@ -162,7 +163,7 @@ func (s *HTTPServer) authorize(r *http.Request, fields fieldBag) bool {
 		fields.Get("hook_token"),
 		r.URL.Query().Get("token"),
 		r.Header.Get("X-Hook-Token"),
-		strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+		bearerTokenFromHeader(r.Header.Get("Authorization")),
 	)
 
 	if provided == "" {
@@ -170,6 +171,53 @@ func (s *HTTPServer) authorize(r *http.Request, fields fieldBag) bool {
 	}
 
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.cfg.HookToken)) == 1
+}
+
+func bearerTokenFromHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= len("Bearer ") || !strings.EqualFold(value[:len("Bearer ")], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(value[len("Bearer "):])
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	candidates := []string{
+		r.Header.Get("CF-Connecting-IP"),
+		firstForwardedIP(r.Header.Get("X-Forwarded-For")),
+		r.Header.Get("X-Real-IP"),
+		r.RemoteAddr,
+	}
+
+	for _, candidate := range candidates {
+		if ip := normalizeClientIP(candidate); ip != "" {
+			return ip
+		}
+	}
+
+	return ""
+}
+
+func firstForwardedIP(value string) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[0])
+}
+
+func normalizeClientIP(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimPrefix(strings.TrimSuffix(value, "]"), "[")
+	}
+	return strings.TrimSpace(value)
 }
 
 func parseRequestFields(r *http.Request) (fieldBag, error) {

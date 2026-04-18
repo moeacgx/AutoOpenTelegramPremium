@@ -281,13 +281,14 @@ CardStorePath=data/gift_cards.json
 - `CardStorePath` 默认是 `data/gift_cards.json`
 - 页面设置会保存在 `data/site_settings.json`
 - 生成后的卡密只可兑换一次
+- 后台不再接受 `?token=...`，只接受 `Authorization: Bearer ...` 或 `X-Admin-Token`
 
 ### 打开页面
 
 管理页：
 
 ```text
-http://127.0.0.1:8080/admin/cards?token=your-admin-token
+http://127.0.0.1:8080/admin/cards
 ```
 
 兑换页：
@@ -298,7 +299,8 @@ http://127.0.0.1:8080/redeem
 
 ### 使用方式
 
-1. 打开管理页，选择商品类型
+1. 打开管理页，输入 `AdminToken` 后进入后台
+   - 后台会把 token 暂存在当前标签页的 `sessionStorage`，后续请求统一走请求头，不再把 token 放进 URL 或隐藏表单
 2. 如果是 `Stars`，填写星星数量
 3. 如果是 `Premium`，选择月数
 4. 填写生成数量，点击生成卡密
@@ -360,7 +362,7 @@ docker compose logs -f
 
 ```text
 兑换页：http://你的服务器IP:8080/redeem
-管理页：http://你的服务器IP:8080/admin/cards?token=你的AdminToken
+管理页：http://你的服务器IP:8080/admin/cards
 ```
 
 ### 5. 数据持久化
@@ -371,6 +373,12 @@ docker compose logs -f
 ./data/gift_cards.json
 ./data/site_settings.json
 ```
+
+### 6. Cloudflare + Nginx 真实 IP
+
+如果你前面挂了 Cloudflare，再经 Nginx 反代到本服务，建议参考 `deploy/nginx-cloudflare-realip.conf.example` 配置真实来源 IP。
+
+应用日志现在会优先记录 `CF-Connecting-IP`，但 Nginx 侧仍需要补齐 `set_real_ip_from` / `real_ip_header`，否则上游日志与限流仍可能只看到 Cloudflare 边缘节点。
 
 `docker-compose.yml` 已经默认挂载：
 

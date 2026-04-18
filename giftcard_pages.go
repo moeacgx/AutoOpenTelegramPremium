@@ -24,7 +24,6 @@ type redeemDetailPageData struct {
 type adminPageData struct {
 	Error      string
 	Success    string
-	AdminToken string
 	BuyCardURL string
 	FormType   string
 	FormStars  int
@@ -417,12 +416,11 @@ func (s *HTTPServer) handleAdminCardsPage(w http.ResponseWriter, r *http.Request
 	}
 
 	if !s.authorizeAdmin(r) {
-		http.Error(w, "AdminToken 校验失败，请在 URL 上带 ?token=... 或使用 Authorization Bearer", http.StatusUnauthorized)
+		s.renderAdminAuthPage(w, http.StatusUnauthorized, "后台鉴权失败，请使用 Authorization Bearer 或 X-Admin-Token 请求头登录。")
 		return
 	}
 
 	s.renderAdminPage(w, adminPageData{
-		AdminToken: s.adminTokenFromRequest(r),
 		BuyCardURL: s.settings.Get().BuyCardURL,
 		FormType:   string(ProductStars),
 		FormStars:  50,
@@ -443,12 +441,11 @@ func (s *HTTPServer) handleSaveAdminSettings(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !s.authorizeAdmin(r) {
-		http.Error(w, "AdminToken 校验失败", http.StatusUnauthorized)
+		s.renderAdminAuthPage(w, http.StatusUnauthorized, "AdminToken 校验失败，请重新登录后台。")
 		return
 	}
 
 	data := adminPageData{
-		AdminToken: s.adminTokenFromRequest(r),
 		BuyCardURL: strings.TrimSpace(r.FormValue("buy_card_url")),
 		FormType:   string(ProductStars),
 		FormStars:  50,
@@ -484,7 +481,7 @@ func (s *HTTPServer) handleGenerateGiftCards(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !s.authorizeAdmin(r) {
-		http.Error(w, "AdminToken 校验失败", http.StatusUnauthorized)
+		s.renderAdminAuthPage(w, http.StatusUnauthorized, "AdminToken 校验失败，请重新登录后台。")
 		return
 	}
 
@@ -495,7 +492,6 @@ func (s *HTTPServer) handleGenerateGiftCards(w http.ResponseWriter, r *http.Requ
 	formNote := strings.TrimSpace(r.FormValue("note"))
 
 	data := adminPageData{
-		AdminToken: s.adminTokenFromRequest(r),
 		BuyCardURL: s.settings.Get().BuyCardURL,
 		FormType:   formType,
 		FormStars:  formStars,
@@ -578,12 +574,9 @@ func (s *HTTPServer) authorizeAdmin(r *http.Request) bool {
 }
 
 func (s *HTTPServer) adminTokenFromRequest(r *http.Request) string {
-	_ = r.ParseForm()
 	return firstNonEmpty(
-		r.FormValue("token"),
-		r.URL.Query().Get("token"),
 		r.Header.Get("X-Admin-Token"),
-		strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+		bearerTokenFromHeader(r.Header.Get("Authorization")),
 	)
 }
 
@@ -628,10 +621,210 @@ func (s *HTTPServer) renderAdminPage(w http.ResponseWriter, data adminPageData) 
 		data.FormCount = 1
 	}
 
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := giftCardTemplates.ExecuteTemplate(w, "admin", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *HTTPServer) renderAdminAuthPage(w http.ResponseWriter, status int, message string) {
+	if status <= 0 {
+		status = http.StatusUnauthorized
+	}
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(renderAdminAuthPageHTML(message))); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func renderAdminAuthPageHTML(message string) string {
+	safeMessage := template.HTMLEscapeString(strings.TrimSpace(message))
+	if safeMessage == "" {
+		safeMessage = "后台鉴权只接受 Authorization Bearer 或 X-Admin-Token 请求头。"
+	}
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>后台登录</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #0f172a;
+      --panel: rgba(15, 23, 42, 0.88);
+      --line: rgba(148, 163, 184, 0.24);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --danger: #fda4af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(56, 189, 248, 0.18), transparent 38%%),
+        linear-gradient(135deg, #020617, #111827 52%%, #1e293b);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(100%%, 520px);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 30px 80px rgba(2, 6, 23, 0.45);
+      padding: 28px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+    }
+    p {
+      margin: 0 0 14px;
+      line-height: 1.7;
+      color: var(--muted);
+    }
+    .alert {
+      margin-bottom: 18px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(127, 29, 29, 0.35);
+      border: 1px solid rgba(251, 113, 133, 0.35);
+      color: var(--danger);
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    input {
+      width: 100%%;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.55);
+      color: var(--text);
+      padding: 14px 16px;
+      font-size: 15px;
+    }
+    button {
+      width: 100%%;
+      margin-top: 16px;
+      border: 0;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #082f49;
+      background: linear-gradient(135deg, #67e8f9, #38bdf8);
+      cursor: pointer;
+    }
+    .status {
+      min-height: 24px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .tips {
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+    }
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      color: #bae6fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>后台登录</h1>
+    <div class="alert">%s</div>
+    <p>为了避免 token 继续出现在 URL、浏览器历史和访问日志里，后台现在只接受请求头鉴权。</p>
+    <form id="admin-auth-form">
+      <label for="admin-token">AdminToken</label>
+      <input id="admin-token" type="password" autocomplete="off" placeholder="请输入新的 AdminToken">
+      <button type="submit">进入后台</button>
+      <div class="status" data-role="status">支持 <code>Authorization: Bearer ...</code> 和 <code>X-Admin-Token</code>。</div>
+    </form>
+    <div class="tips">
+      <p>当前页只会把 token 暂存到当前标签页的 <code>sessionStorage</code>，关闭标签页后自动失效。</p>
+      <p>如果你已经旋转了服务器上的 AdminToken，直接在这里填新值即可。</p>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const storageKey = 'adminToken';
+      const form = document.getElementById('admin-auth-form');
+      const input = document.getElementById('admin-token');
+      const status = document.querySelector('[data-role="status"]');
+
+      function setStatus(text) {
+        status.textContent = text;
+      }
+
+      function requestHeaders(token) {
+        return {
+          'Authorization': 'Bearer ' + token,
+          'X-Admin-Token': token
+        };
+      }
+
+      function openAdmin(token) {
+        const trimmed = String(token || '').trim();
+        if (!trimmed) {
+          setStatus('请输入有效的 AdminToken。');
+          input.focus();
+          return;
+        }
+
+        setStatus('正在校验并进入后台...');
+        fetch('/admin/cards', {
+          method: 'GET',
+          headers: requestHeaders(trimmed)
+        }).then(function (response) {
+          return response.text().then(function (html) {
+            if (!response.ok) {
+              throw new Error('AdminToken 校验失败，请确认已使用新的 token。');
+            }
+            sessionStorage.setItem(storageKey, trimmed);
+            document.open();
+            document.write(html);
+            document.close();
+          });
+        }).catch(function (error) {
+          setStatus(error.message || '后台打开失败，请稍后重试。');
+        });
+      }
+
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        openAdmin(input.value);
+      });
+
+      const cachedToken = sessionStorage.getItem(storageKey);
+      if (cachedToken) {
+        input.value = cachedToken;
+        openAdmin(cachedToken);
+      } else {
+        input.focus();
+      }
+    })();
+  </script>
+</body>
+</html>`, safeMessage)
 }
 
 const giftCardPageTemplate = `
@@ -1520,8 +1713,7 @@ const giftCardPageTemplate = `
         <h2>页面设置</h2>
         <span class="muted">兑换页按钮入口</span>
       </div>
-      <form method="post" action="/admin/settings/save" class="grid-1" style="margin-bottom:18px;">
-        {{if .AdminToken}}<input type="hidden" name="token" value="{{.AdminToken}}">{{end}}
+      <form id="admin-settings-form" method="post" action="/admin/settings/save" class="grid-1 admin-auth-form" style="margin-bottom:18px;">
         <div>
           <label for="buy-card-url">购买卡密地址</label>
           <input id="buy-card-url" name="buy_card_url" value="{{.BuyCardURL}}" placeholder="例如 https://shop.example.com/buy">
@@ -1536,8 +1728,7 @@ const giftCardPageTemplate = `
     <div class="panel" style="margin-bottom: 20px;">
       {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
       {{if .Success}}<div class="alert alert-ok">{{.Success}}</div>{{end}}
-      <form method="post" action="/admin/cards/generate" class="grid-1">
-        {{if .AdminToken}}<input type="hidden" name="token" value="{{.AdminToken}}">{{end}}
+      <form id="admin-generate-form" method="post" action="/admin/cards/generate" class="grid-1 admin-auth-form">
         <div class="grid">
           <div>
             <label for="type">商品类型</label>
@@ -1685,12 +1876,76 @@ const giftCardPageTemplate = `
     })();
 
     (function () {
+      const adminTokenStorageKey = 'adminToken';
+      const adminForms = Array.from(document.querySelectorAll('.admin-auth-form'));
       const generatedTextarea = document.querySelector('[data-role="generated-codes"]');
       const pageStatus = document.querySelector('[data-role="page-status"]');
       const rows = Array.from(document.querySelectorAll('.js-card-row'));
       const checkboxes = Array.from(document.querySelectorAll('.js-card-checkbox'));
       const pageSize = 50;
       let currentPage = 1;
+
+      function getAdminToken() {
+        return sessionStorage.getItem(adminTokenStorageKey) || '';
+      }
+
+      function buildAdminHeaders(extra) {
+        const token = getAdminToken().trim();
+        const headers = Object.assign({}, extra || {});
+        if (token) {
+          headers.Authorization = 'Bearer ' + token;
+          headers['X-Admin-Token'] = token;
+        }
+        return headers;
+      }
+
+      function resetAdminLogin() {
+        sessionStorage.removeItem(adminTokenStorageKey);
+      }
+
+      function replaceDocument(html) {
+        document.open();
+        document.write(html);
+        document.close();
+      }
+
+      function submitAdminForm(form) {
+        const token = getAdminToken().trim();
+        if (!token) {
+          window.location.href = '/admin/cards';
+          return;
+        }
+
+        const formData = new URLSearchParams(new FormData(form));
+        fetch(form.action, {
+          method: form.method || 'POST',
+          headers: buildAdminHeaders({
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+          }),
+          body: formData.toString()
+        }).then(function (response) {
+          return response.text().then(function (html) {
+            if (response.status === 401) {
+              resetAdminLogin();
+              replaceDocument(html);
+              return;
+            }
+            if (!response.ok) {
+              throw new Error('后台请求失败，请稍后重试。');
+            }
+            replaceDocument(html);
+          });
+        }).catch(function (error) {
+          alert(error.message || '后台请求失败，请稍后重试。');
+        });
+      }
+
+      adminForms.forEach(function (form) {
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          submitAdminForm(form);
+        });
+      });
 
       function normalizeCodes(raw) {
         return String(raw || '')
@@ -1742,20 +1997,24 @@ const giftCardPageTemplate = `
         }
 
         const form = new URLSearchParams();
-        {{if .AdminToken}}form.append('token', '{{.AdminToken}}');{{end}}
         filtered.forEach(function (code) {
           form.append('code', code);
         });
 
         fetch('/admin/cards/delete', {
           method: 'POST',
-          headers: {
+          headers: buildAdminHeaders({
             'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-          },
+          }),
           body: form.toString()
         })
         .then(function (response) {
           return response.json().then(function (payload) {
+            if (response.status === 401) {
+              resetAdminLogin();
+              window.location.href = '/admin/cards';
+              return null;
+            }
             if (!response.ok || payload.ok !== true) {
               throw new Error(payload.error || '删除失败');
             }
@@ -1763,6 +2022,9 @@ const giftCardPageTemplate = `
           });
         })
         .then(function (payload) {
+          if (!payload) {
+            return;
+          }
           alert('已删除 ' + payload.deleted + ' 个卡密。');
           window.location.reload();
         })
